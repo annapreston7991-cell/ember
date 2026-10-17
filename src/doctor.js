@@ -9,6 +9,7 @@ import { loadConfig, configPath } from './config.js';
 import { detectHardware, pickModel } from './hardware.js';
 import { profilePath, projectMemoryPath } from './memory.js';
 import { c } from './ui.js';
+import { BUILTIN_PROVIDERS, configPermsOk } from './cloud.js';
 
 export async function runDoctor({ ui, root }) {
   const cfg = loadConfig();
@@ -38,6 +39,14 @@ export async function runDoctor({ ui, root }) {
     } catch (e) { bad(`Could not list models: ${e.message}`); }
   }
 
+  const vm = cfg.visionModel || 'qwen2.5vl:3b';
+  if (v) { try { ui.print(((await client.hasModel(vm)) ? c.green('✓ ') + `Vision model ${vm} installed` : c.gray('· ') + `Vision model ${vm} not installed (optional: ember setup --vision)`)); } catch { /* ignore */ } }
+  ui.print(c.green('✓ ') + `Self-fix loop: ${cfg.selfFix?.enabled !== false ? `on (up to ${cfg.selfFix?.maxAttempts ?? 3} attempts)` : 'off'} · git checkpoints: ${cfg.git?.checkpoints !== false ? 'on' : 'off'} · web lookup: ${cfg.web?.enabled ? 'on' : 'off'}`);
+  for (const [name, p] of Object.entries({ ...BUILTIN_PROVIDERS, ...(cfg.providers || {}) })) {
+    const has = (p.apiKeyEnv && process.env[p.apiKeyEnv]) || p.apiKey;
+    if (has) ui.print(c.green('✓ ') + `Cloud provider ${name} has a key (use --model cloud:${name}:<model>)`);
+  }
+  if (!configPermsOk()) bad(`${configPath()} is readable by other users. Run: chmod 600 ${configPath()}`);
   const hw = detectHardware();
   ui.ok(`Hardware: ${hw.ramGB} GB RAM${hw.gpu ? `, ${hw.gpu}` : ''} → recommended ${pickModel(hw)}`);
   const rg = spawnSync('rg', ['--version']);

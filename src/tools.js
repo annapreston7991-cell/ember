@@ -248,7 +248,9 @@ export function execShell(ctx, cmd, timeoutSec = 120) {
   return new Promise((resolve) => {
     const shell = process.platform === 'win32' ? 'cmd.exe' : 'bash';
     const args = process.platform === 'win32' ? ['/d', '/s', '/c', cmd] : ['-c', cmd];
-    const child = spawn(shell, args, { cwd: ctx.root, env: { ...process.env, EMBER: '1' } });
+    const env = { ...process.env, EMBER: '1' };
+    delete env.NODE_TEST_CONTEXT; // don't let a parent node:test runner swallow the child's results
+    const child = spawn(shell, args, { cwd: ctx.root, env });
     let out = '';
     const onData = (d) => { const s = d.toString(); out += s; if (!ctx.quietCommands) ctx.ui.write(c.gray(s)); };
     child.stdout.on('data', onData);

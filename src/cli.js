@@ -13,7 +13,13 @@ import { UI, c } from './ui.js';
 import { runSetup } from './setup.js';
 import { runDoctor } from './doctor.js';
 import { memoryCommand } from './memoryview.js';
-import { runRepl, runOneShot } from './repl.js';
+import { runRepl, runOneShot, explainPrompt } from './repl.js';
+import { clientFor } from './clients.js';
+import { loadPlugins } from './plugins.js';
+import { runWatch } from './watch.js';
+import { NEW_PROJECT_PROMPT } from './prompt.js';
+import { git } from './git.js';
+import { configPermsOk } from './cloud.js';
 
 const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'));
 
@@ -24,10 +30,16 @@ Usage
   ember "add a dark mode"   do one task and exit
   ember setup [--model m]   install/start Ollama and download a coding model
   ember doctor              check Ollama, the model and your config
+  ember new "<idea>"        scaffold a new working project in a new folder
+  ember explain <file|q>    plain-language explanation (read-only)
+  ember watch               re-run tests/build on every change and offer fixes
   ember memory [show|prefs|remember|forget|edit|reset|on|off|path]
 
 Options
-  -m, --model <name>   use a specific Ollama model for this run
+  -m, --model <name>   use a specific model for this run (cloud:grok-4 for xAI)
+      --dir <name>     folder name for ember new
+      --no-fix         skip the self-fix loop (tests/build after edits)
+      --vision         (setup) also download the vision model for screenshots
   -y, --yes            auto-approve file changes and commands (dangerous ones still need you)
   -C, --cwd <dir>      project folder (default: current folder)
       --host <url>     Ollama URL (default http://127.0.0.1:11434)
@@ -47,6 +59,9 @@ export function parseArgs(argv) {
     else if (a === '-C' || a === '--cwd') opts.cwd = next();
     else if (a === '--host') opts.host = next();
     else if (a === '--no-memory') opts.noMemory = true;
+    else if (a === '--no-fix') opts.noFix = true;
+    else if (a === '--vision') opts.vision = true;
+    else if (a === '--dir') opts.dir = next();
     else if (a === '-v' || a === '--version') opts.version = true;
     else if (a === '-h' || a === '--help') opts.help = true;
     else if (a === '--') { opts._.push(...argv.slice(i + 1)); break; }
@@ -65,7 +80,7 @@ export async function main(argv) {
   const [cmd, ...rest] = opts._;
 
   try {
-    if (cmd === 'setup') return (await runSetup({ ui, model: opts.model, yes: opts.yes })) ? 0 : 1;
+    if (cmd === 'setup') return (await runSetup({ ui, model: opts.model, yes: opts.yes, vision: opts.vision })) ? 0 : 1;
     if (cmd === 'doctor') return (await runDoctor({ ui, root })) ? 0 : 1;
     if (cmd === 'memory') { await memoryCommand({ ui, root, args: rest, yes: opts.yes }); return 0; }
     if (cmd === 'help') { console.log(USAGE); return 0; }
@@ -74,39 +89,71 @@ export async function main(argv) {
     if (opts.model) cfg.model = opts.model;
     if (opts.host) cfg.host = opts.host;
     if (opts.noMemory) cfg.memory = { ...cfg.memory, enabled: false };
-    if (!cfg._exists && !opts.model) {
-      ui.warn(`Ember isn't set up yet. Run ${c.bold('ember setup')} first (it installs Ollama and a coding model).`);
-      return 1;
+    if (opts.noFix) cfg.selfFix = { ...cfg.selfFix, enabled: false };
+    let { client, cloud } = clientFor(cfg.model, cfg);
+    if (cloud) {
+      if (!(await client.hasModel())) { ui.error(`No API key for ${client.label}. Set ${client.p.apiKeyEnv} in your environment, or switch back with --model qwen2.5-coder:7b.`); return 1; }
+      if (client.p.apiKey && !process.env[client.p.apiKeyEnv] && !configPermsOk()) ui.warn('Your config holds an API key but is readable by others. Run: chmod 600 ~/.ember/config.json');
+    } else {
+      // First run (no config) or the model isn't there: run setup automatically, then carry on.
+      const up = await ensureServer(client);
+      const ready = up && cfg._exists && (await client.hasModel(cfg.model).catch(() => false));
+      const usable = up && opts.model && (await client.hasModel(cfg.model).catch(() => false));
+      if (!ready && !usable) {
+        ui.print(c.yellow(cfg._exists ? `Model ${cfg.model} isn't available yet, so let's finish setup first.` : 'Welcome to Ember! First-time setup: this gets Ollama and a coding model ready (one time).'));
+        ui.print('');
+        const ok = await runSetup({ ui, model: opts.model || (cfg._exists ? cfg.model : undefined), yes: opts.yes, askVision: false, host: opts.host });
+        if (!ok) { ui.error(`Setup didn't finish. Fix the issue above, then run ${c.bold('ember')} again (or ${c.bold('ember doctor')}).`); return 1; }
+        ui.print('');
+        const fresh = loadConfig();
+        cfg.model = opts.model || fresh.model;
+        cfg._exists = true;
+        ({ client, cloud } = clientFor(cfg.model, cfg));
+      }
     }
-    const client = new OllamaClient(cfg.host);
-    if (!(await ensureServer(client))) {
-      ui.error(`Can't reach Ollama at ${cfg.host}. Start it with ${c.bold('ollama serve')} or run ${c.bold('ember doctor')}.`);
-      return 1;
+
+    // `ember new`: make the folder first so the agent's project root is the new project.
+    let projectRoot = root;
+    if (cmd === 'new') {
+      const idea = rest.join(' ').trim();
+      if (!idea) { ui.error('Usage: ember new "a todo app with a REST API"'); return 1; }
+      const slug = (opts.dir || idea.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').split('-').slice(0, 4).join('-')) || 'ember-app';
+      projectRoot = path.join(root, slug);
+      if (fs.existsSync(projectRoot) && fs.readdirSync(projectRoot).length) { ui.error(`${projectRoot} already exists and is not empty. Use --dir <name>.`); return 1; }
+      fs.mkdirSync(projectRoot, { recursive: true });
+      git(projectRoot, ['init', '-q']);
+      ui.ok(`Created ${projectRoot}`);
     }
-    if (!(await client.hasModel(cfg.model))) {
-      ui.error(`Model ${cfg.model} isn't downloaded. Run ${c.bold(`ember setup --model ${cfg.model}`)}.`);
-      return 1;
-    }
-    const memory = new Memory(root, cfg);
-    const agent = new Agent({ cfg, root, ui, client, memory });
+
+    const memory = new Memory(projectRoot, cfg);
+    const { tools: pluginTools, skipped } = await loadPlugins({
+      root: projectRoot, cfg,
+      confirmTrust: async (file) => (await ui.confirm(`Project plugin ${path.relative(projectRoot, file)} wants to add a tool. It is code from this repo and will run on your machine. Trust it?`, { allowAlways: false })) === 'y'
+    });
+    for (const sk of skipped) ui.print(c.gray(`  (plugin ${path.basename(sk.file)} skipped: ${sk.reason})`));
+    const agent = new Agent({ cfg, root: projectRoot, ui, client, memory, extraTools: pluginTools });
     await agent.init();
+
+    if (cmd === 'new') {
+      await runOneShot({ agent, ui, prompt: NEW_PROJECT_PROMPT(rest.join(' ').trim(), projectRoot) });
+      ui.print('');
+      ui.print(`Next: ${c.yellow(`cd ${path.relative(process.cwd(), projectRoot) || '.'}`)} then ${c.yellow('ember')} to keep building.`);
+      return 0;
+    }
+    if (cmd === 'explain') {
+      const q = rest.join(' ').trim();
+      if (!q) { ui.error('Usage: ember explain <file or question>'); return 1; }
+      await agent.explain(explainPrompt(q, projectRoot));
+      return 0;
+    }
+    if (cmd === 'watch') return await runWatch({ agent, ui, cfg, root: projectRoot });
 
     if (opts._.length) {
       // `ember fix the tests` and `ember "fix the tests"` both work.
       await runOneShot({ agent, ui, prompt: opts._.join(' ') });
       return 0;
     }
-    if (!process.stdin.isTTY && !opts.yes) {
-      // Piped input: treat all of stdin as a single task.
-      const chunks = [];
-      for await (const ch of process.stdin) chunks.push(ch);
-      const text = Buffer.concat(chunks).toString('utf8').trim();
-      if (!text) return 0;
-      ui.print(c.gray('(no terminal: file changes and commands will be declined; use --yes to allow them)'));
-      ui.ask = async () => null; // stdin is used up; decline anything that needs approval
-      await runOneShot({ agent, ui, prompt: text });
-      return 0;
-    }
+    // No arguments: always the interactive REPL (it also reads piped lines, e.g. `echo /exit | ember`).
     await runRepl({ agent, ui, cfg, client });
     return 0;
   } finally {

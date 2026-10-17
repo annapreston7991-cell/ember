@@ -16,23 +16,52 @@ Ember plans, reads and writes files, runs commands, and builds projects right in
 - **Learns you:** remembers your preferences, picks up your repo's style, and adapts over time. All of this stays on your machine (see [Ember learns you](#ember-learns-you)).
 - **Two ways to use it:** an interactive chat (`ember`) or one-shot tasks (`ember "add a /health route"`).
 - **Works with any model:** uses native tool calling when the model supports it and a JSON tool mode when it doesn't.
+- **Git built in:** takes a checkpoint before each task, `/rollback` undoes a whole session, and `/commit` writes the commit message for you.
+- **Fixes its own mistakes:** after editing, it runs your tests, build and lint, then fixes what broke (up to 3 attempts).
+- **Starts new projects:** `ember new "a todo app with a REST API"` plans the project, writes the files, installs dependencies and runs the tests.
+- **Explains code:** `ember explain server.js` gives a plain-language, read-only explanation.
+- **Understands screenshots:** `/image shot.png`, or any image path in your message, is read by a local vision model.
+- **Watch mode:** `ember watch` re-runs your checks on every save and offers to fix failures.
+- **Plugins:** add your own tools with a small JS file.
+- **Optional extras:** web lookup and cloud models (xAI Grok or any OpenAI-compatible API). Both are off by default.
 
 ## Install
 
 Requirements: **Node.js 18+**, Linux or macOS (Windows works once Ollama is installed), and ideally 8 GB+ of RAM.
 
+One line (clone, install, done):
+
+```bash
+git clone https://github.com/annapreston7991-cell/ember.git ~/ember && ~/ember/install.sh
+```
+
+Then type **`ember`** in any project folder. The first run sets everything up for you: it installs and starts Ollama (asking first) and downloads a coding model that fits your machine. After that it drops you straight into the chat. You can also run `ember setup` yourself at any time.
+
+The same thing by hand:
+
 ```bash
 git clone https://github.com/annapreston7991-cell/ember.git
 cd ember
-npm install -g .        # gives you the `ember` command (use sudo if your npm needs it)
-ember setup             # installs/starts Ollama and downloads a coding model
+npm install -g .        # puts `ember` on your PATH
+ember                   # first run = setup, then the chat
 ```
 
-Or run it without a global install:
+Or run it without a global install: `npx github:annapreston7991-cell/ember`.
+
+### If `ember` isn't found, or npm says EACCES
+
+Global npm installs fail when npm's global folder belongs to root (`EACCES: permission denied`), or they succeed but the `ember` command isn't on your PATH. `install.sh` fixes both automatically. To do it by hand, give npm a folder you own (never use `sudo npm`):
 
 ```bash
-npx github:annapreston7991-cell/ember setup
+mkdir -p ~/.npm-global
+npm config set prefix ~/.npm-global
+echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+cd ~/ember && npm install -g .
+which ember && ember --version
 ```
+
+If you use `nvm`, global installs already go to a folder you own; just make sure the same Node version is active (`nvm use --lts`). To check where npm puts global commands, run `npm prefix -g`; the `ember` command lives in its `bin/` folder.
 
 ### What `ember setup` does
 
@@ -48,7 +77,9 @@ npx github:annapreston7991-cell/ember setup
    | 10 GB+ GPU / Apple Silicon 32 GB+ | `qwen2.5-coder:14b` |
    | 22 GB+ GPU / Apple Silicon 64 GB+ | `qwen2.5-coder:32b` |
 
-4. Downloads the model with a progress bar and saves settings to `~/.ember/config.json`.
+4. Downloads the model with a progress bar.
+5. Optionally downloads the vision model `qwen2.5vl:3b` (~3 GB) so Ember can read screenshots. Use `ember setup --vision` to get it without the question.
+6. Saves settings to `~/.ember/config.json`, readable only by you (mode 600).
 
 To choose a model yourself, run `ember setup --model qwen2.5-coder:14b`. Any Ollama model works (for example `--model llama3.1:8b`).
 
@@ -60,6 +91,10 @@ ember                                  # interactive session
 ember "add a /health route to server.js and a test for it"
 ember -y "run the tests and fix whatever fails"   # auto-approve (dangerous commands still ask)
 ember doctor                           # check Ollama, model, config
+ember new "a URL shortener with Express and SQLite"
+ember explain src/auth.js              # or: ember explain "how does login work?"
+ember watch                            # tests on every save, fixes on request
+ember "the layout breaks like this: ./screenshots/bug.png"
 ```
 
 ### In the chat
@@ -67,10 +102,16 @@ ember doctor                           # check Ollama, model, config
 | Command | What it does |
 |---|---|
 | `/help` | show commands |
-| `/model [name]` | show or switch the model (offers to pull it) |
+| `/model [name]` | show or switch the model (offers to pull it). `/model cloud:grok-4` switches to xAI |
 | `/models` | list installed models |
 | `/plan` | show the current plan |
 | `/undo` | revert the last file change |
+| `/rollback` | undo everything Ember changed this session (restores the git checkpoint) |
+| `/commit` | commit all changes with an AI-written message (you approve or edit it) |
+| `/fix` | run the project's checks now and fix failures |
+| `/explain <file or question>` | plain-language explanation, read-only |
+| `/image <path> [what to do]` | show Ember a screenshot |
+| `/plugins` | list loaded plugin tools |
 | `/clear` | start a fresh conversation |
 | `/remember <note>` | save a preference (`--project` for this repo only) |
 | `/forget <words>` | forget matching notes |
@@ -93,7 +134,8 @@ Ember works the way a careful pair programmer would:
 - **Ask before every command.** Read-only commands on the allowlist (`ls`, `cat`, `git status`, `git diff`, `rg`, …) run without asking. You can edit the `allowlist` in `~/.ember/config.json`. The allowlist never matches commands that use pipes, redirects, `;`, `&&` or `$(…)`.
 - **Dangerous commands need a typed "yes."** This covers commands like `rm -rf`, `sudo`, `mkfs`, `dd of=/dev/…`, `git push --force`, `git reset --hard`, `curl … | sh` and fork bombs. You must type `yes` for these, **even with `--yes`**. Without a terminal they are refused.
 - **Undo.** Each change is backed up (`~/.ember/backups/`) and `/undo` restores it.
-- **No network beyond Ollama.** Ember talks only to your local Ollama server (`http://127.0.0.1:11434` by default).
+- **No network beyond Ollama by default.** Ember talks only to your local Ollama server (`http://127.0.0.1:11434`). Web lookup and cloud models are opt-in, and Ember tells you when they are on.
+- **Git safety net.** In git repos, a checkpoint is taken before each task (see below).
 
 ## Ember learns you
 
@@ -134,6 +176,94 @@ ember --no-memory "..."   # one run without memory
 
 In `~/.ember/config.json`, `"memory": { "enabled": false }` turns memory off and `"autoLearn": false` keeps memory while stopping automatic learning.
 
+## Git: checkpoints, rollback, commits
+
+In a git repository, Ember snapshots your working tree **before every task**. The snapshot includes untracked files but not ignored ones like `.env`. It is stored as a hidden commit under `refs/ember/<session>/<n>` and is built with a throwaway index, so **your branch, HEAD and staged changes are never touched**.
+
+- `/rollback` shows which files would be reverted, deleted or restored, asks you, and then puts the folder back the way it was when the session started. The checkpoint ref is kept, so you can still look at it with `git show refs/ember/...`.
+- `/commit` reads the pending diff, asks the model for a message (a summary line of 72 characters or fewer plus short bullets), and shows it to you. You answer **y**, **n**, or **e** to type your own. Then it runs `git add -A && git commit`.
+- Outside git, `/rollback` falls back to undoing each file change from the session's backups.
+- To turn checkpoints off, set `"git": { "checkpoints": false }`. Clean them up with `git for-each-ref --format='%(refname)' refs/ember/ | xargs -n1 git update-ref -d`.
+
+## Self-fix loop
+
+When a task changes files, Ember finds your project's checks and runs them (`typecheck`, `lint`, `build`, `test` from `package.json` using npm, pnpm, yarn or bun, or `pytest`, `go test`, `cargo test`). If one fails, Ember sends the error output back to the model and lets it fix the problem, then checks again, up to `selfFix.maxAttempts` times (default 3). Every check is a normal command, so **the usual approval rules apply**: you are asked unless it is allowlisted or you chose "always", and you can decline to skip the checks.
+
+- Set `"checks": { "commands": ["make check"] }` to use your own commands.
+- Turn it off with `"selfFix": { "enabled": false }`, or use `--no-fix` for a single run. `/fix` runs it on demand.
+
+## New projects: `ember new`
+
+```bash
+ember new "a tiny REST API for notes with tests"     # folder: a-tiny-rest-api
+ember new "landing page for my bakery" --dir bakery
+```
+
+Ember creates the folder and runs `git init`. It then plans the project, writes a `package.json` (or the equivalent) with `start` and `test` scripts, the code, tests, a README and a `.gitignore`. It installs dependencies (asking first) and runs the tests, fixing any failures. When it finishes, `cd` into the folder and run `ember` to keep building.
+
+## Explain mode
+
+`ember explain <file|folder|question>` or `/explain …` switches to a read-only toolset (`list_dir`, `read_file`, `search`) and a plain-language style. Ember cannot edit files or run commands in this mode.
+
+## Screenshots and images
+
+Use `/image path/to/shot.png fix the overlap`, or put any `.png`, `.jpg`, `.webp` or `.gif` path in your message. A local vision model (`visionModel`, default `qwen2.5vl:3b`; `llava` works too) describes the image precisely, including any error text, and that description is passed to the coding model. This means any coding model can "see." If the vision model isn't downloaded yet, Ember offers to download it the first time. Images are only read from paths you type.
+
+## Watch mode
+
+`ember watch` lists the checks it will run and asks once. After that it re-runs them whenever a file changes, ignoring `node_modules`, `.git` and build folders. It uses polling, so it works on every OS and Node 18. When a check fails it shows the error and asks **"Ask Ember to fix it?"**. Fixes go through the normal diff approvals. Press Ctrl+C to stop.
+
+## Web lookup (optional, off by default)
+
+Set `"web": { "enabled": true }` in `~/.ember/config.json` to give Ember two tools:
+
+- `web_search`, which uses DuckDuckGo's HTML page
+- `web_fetch`, which returns a page's readable text
+
+Ember asks before **each** lookup (or "always" for the session). Local and private addresses are blocked.
+
+## Cloud models (optional)
+
+Local Ollama is always the default. If you want a bigger model for a hard task, you can switch to any OpenAI-compatible API:
+
+```bash
+export XAI_API_KEY=...            # from console.x.ai
+ember -m cloud:grok-4 "refactor the auth module"
+# or inside a session:
+/model cloud:grok-4
+/model qwen2.5-coder:7b           # back to local
+```
+
+The built-in providers are `grok` (xAI, `XAI_API_KEY`), `openai` (`OPENAI_API_KEY`) and `openrouter` (`OPENROUTER_API_KEY`). Use `cloud:<provider>:<model>` to pick one, for example `cloud:openai:gpt-4.1`. To add your own endpoint, such as LM Studio, vLLM or a company gateway:
+
+```json
+"providers": { "lab": { "baseUrl": "http://10.0.0.5:8000/v1", "apiKeyEnv": "LAB_KEY" } }
+```
+
+Keys are read **only** from environment variables or from `~/.ember/config.json` (`"providers": { "grok": { "apiKey": "..." } }`). Ember writes that file with permissions 600, and `ember doctor` warns you if it is readable by others. When a cloud model is active, Ember warns that your prompts and the code it reads are sent to that provider.
+
+## Plugins
+
+A plugin is one JS module in `~/.ember/plugins/` (all projects) or `<project>/.ember/plugins/` (one project):
+
+```js
+export default {
+  name: 'todo_scan',                                   // tool name the model calls
+  description: 'List TODO and FIXME comments',          // shown to the model
+  parameters: { type: 'object', properties: { tag: { type: 'string' } } },
+  readOnly: true,                                       // false (default) = ask before each call
+  async run(args, ember) {
+    // ember.root, ember.resolve(path), ember.readFile(path),
+    // ember.writeFile(path, text)  -> normal diff + approval
+    // ember.exec(command)          -> normal command approval
+    // ember.print(text)
+    return 'result text for the model';
+  }
+};
+```
+
+A full example is in [`examples/plugins/todo-scan.js`](examples/plugins/todo-scan.js). Project plugins are code from the repository, so the first time Ember sees one (and every time its contents change) it **asks whether you trust it** and remembers your answer by file hash. A plugin can't reuse a built-in tool name. `/plugins` lists what is loaded. Turn plugins off with `"plugins": { "enabled": false }`.
+
 ## Configuration
 
 `~/.ember/config.json` is created by `ember setup`:
@@ -147,7 +277,16 @@ In `~/.ember/config.json`, `"memory": { "enabled": false }` turns memory off and
   "maxSteps": 25,
   "allowlist": ["ls", "cat", "git status", "git diff", "rg", "..."],
   "memory": { "enabled": true, "autoLearn": true, "maxPromptChars": 1800, "maxNotes": 60 },
-  "approvals": { "suggestAfter": 3 }
+  "approvals": { "suggestAfter": 3 },
+  "git": { "checkpoints": true },
+  "selfFix": { "enabled": true, "maxAttempts": 3, "timeoutSec": 300 },
+  "checks": { "commands": [] },
+  "visionModel": "qwen2.5vl:3b",
+  "web": { "enabled": false },
+  "cloud": { "defaultProvider": "grok" },
+  "providers": {},
+  "plugins": { "enabled": true },
+  "watch": { "debounceMs": 600, "intervalMs": 1000 }
 }
 ```
 
@@ -157,21 +296,32 @@ Set `EMBER_HOME` to keep Ember's files somewhere other than `~/.ember`. `OLLAMA_
 
 ```bash
 npm install
-npm test          # node:test suite: path safety, tool-call parser, edit_file, memory, mocked agent loop
+npm test          # node:test suite: safety, parser, edit_file, memory, git, self-fix, cloud, web, plugins, vision, watch, `ember new` (mocked models)
 node bin/ember.js --help
 ```
 
-The code lives in `src/`: `agent.js` (agent loop), `tools.js`, `safety.js`, `parser.js` (JSON tool-call fallback), `memory.js` and `style.js` (learning layer), `ollama.js`, `setup.js`, `doctor.js`, `repl.js`, `cli.js`.
+The code lives in `src/`:
+
+- `agent.js`: agent loop, self-fix loop, explain mode
+- `tools.js`, `safety.js`, `parser.js` (JSON tool-call fallback)
+- `memory.js` and `style.js`: the learning layer
+- `git.js`, `checks.js`, `vision.js`, `web.js`, `cloud.js`, `clients.js`, `plugins.js`, `watch.js`
+- `pro.js`: the future Pro hook
+- `ollama.js`, `setup.js`, `doctor.js`, `repl.js`, `cli.js`
 
 ## Roadmap
 
 - [ ] Persistent sessions (`ember --resume`) and multi-level undo across sessions
-- [ ] Image input for vision models (screenshots of UI bugs)
-- [ ] Project-wide "build me an app" templates (Express, EJS, static sites)
-- [ ] Git integration: commit with generated messages, branch per task
+- [ ] Branch-per-task mode and PR descriptions
 - [ ] Optional sandboxed command runner (containers)
-- [ ] MCP tool servers
-- [ ] Ember Pro add-ons in the LLYVerse store
+- [ ] MCP tool servers as plugins
+- [ ] Native image input for coding models that support vision
+- [ ] **Ember Pro** (planned, about $9/month through the LLYVerse store and Stripe):
+  - hosted cloud-model credits, so you don't need your own API key
+  - team memory shared across a team
+  - premium plugins
+
+  Ember itself stays free and local. The hook is `src/pro.js` (`isPro()`), and plugins can set `pro: true`. There is no billing code yet, and nothing that is free today will be gated.
 
 ## License
 

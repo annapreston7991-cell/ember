@@ -36,7 +36,17 @@ export const DEFAULTS = {
   },
   approvals: {
     suggestAfter: 3     // suggest allowlisting a command after N approvals in a row
-  }
+  },
+  git: { checkpoints: true },              // snapshot to refs/ember/* before each task
+  selfFix: { enabled: true, maxAttempts: 3, timeoutSec: 300 },
+  checks: { commands: [] },                // override detected test/build/lint commands
+  visionModel: 'qwen2.5vl:3b',             // used for /image and screenshots in prompts
+  web: { enabled: false },                 // web_search / web_fetch tools (off by default)
+  cloud: { defaultProvider: 'grok' },      // used by "cloud:<model>"
+  providers: {},                           // extra OpenAI-compatible endpoints
+  plugins: { enabled: true },
+  watch: { debounceMs: 600, intervalMs: 1000 },
+  pro: { enabled: false }                  // hook for a future Pro tier; nothing is gated today
 };
 
 function deepMerge(base, extra) {
@@ -68,5 +78,7 @@ export function loadConfig() {
 export function saveConfig(cfg) {
   fs.mkdirSync(emberHome(), { recursive: true });
   const { _exists, ...clean } = cfg;
-  fs.writeFileSync(configPath(), JSON.stringify(clean, null, 2) + '\n');
+  // 0600: the config may hold API keys for optional cloud providers.
+  fs.writeFileSync(configPath(), JSON.stringify(clean, null, 2) + '\n', { mode: 0o600 });
+  try { fs.chmodSync(configPath(), 0o600); } catch { /* windows */ }
 }

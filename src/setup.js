@@ -37,8 +37,9 @@ export async function pullWithProgress(client, model, ui) {
   ui.print('');
 }
 
-export async function runSetup({ ui, model: forcedModel, yes }) {
+export async function runSetup({ ui, model: forcedModel, yes, vision, askVision = true, host }) {
   const cfg = loadConfig();
+  if (host) cfg.host = host;
   ui.print(c.bold().yellow('Ember setup') + c.gray(' · everything runs on this computer, no API keys'));
   ui.print('');
 
@@ -91,8 +92,20 @@ export async function runSetup({ ui, model: forcedModel, yes }) {
     ui.ok(`${model} downloaded`);
   }
 
-  // 5. Config
+  // 5. Optional vision model for screenshots (/image)
+  const vmodel = cfg.visionModel || 'qwen2.5vl:3b';
+  if (await client.hasModel(vmodel)) ui.ok(`Vision model ${vmodel} is ready (for screenshots)`);
+  else {
+    const want = vision ? 'y' : (yes || !askVision) ? 'n' : await ui.confirm(`Optional: also download ${vmodel} (~3 GB) so Ember can look at screenshots?`, { allowAlways: false });
+    if (want === 'y') {
+      try { await pullWithProgress(client, vmodel, ui); ui.ok(`${vmodel} downloaded`); }
+      catch (e) { ui.warn(`Vision model download failed (${e.message}). You can retry later with: ember setup --vision`); }
+    } else ui.print(c.gray(`  skipped. Later: ember setup --vision (or Ember will offer it the first time you share an image)`));
+  }
+
+  // 6. Config
   cfg.model = model;
+  cfg.lastLocalModel = model;
   saveConfig(cfg);
   ui.ok(`Saved settings to ${configPath()}`);
   const tools = await client.supportsTools(model);

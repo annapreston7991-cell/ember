@@ -1,6 +1,6 @@
 {
-  "name": "ember-cli",
-  "version": "0.1.0",
+  "name": "llyverse-ember",
+  "version": "0.2.0",
   "description": "Ember: a local, private command-line AI coding agent powered by Ollama. Part of the LLYVerse.",
   "type": "module",
   "bin": {
@@ -9,16 +9,25 @@
   "files": [
     "bin",
     "src",
+    "examples",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "install.sh"
   ],
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=18"
   },
-  "keywords": ["ai", "cli", "coding-agent", "ollama", "local", "llyverse"],
+  "keywords": [
+    "ai",
+    "cli",
+    "coding-agent",
+    "ollama",
+    "local",
+    "llyverse"
+  ],
   "homepage": "https://llyverse.org",
   "license": "SEE LICENSE IN LICENSE",
   "dependencies": {
