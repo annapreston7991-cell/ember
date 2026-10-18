@@ -20,6 +20,8 @@ ${c.bold('Commands')}
   /model [name]      show or switch the model (pulls it if needed; cloud:grok-4 for xAI)
   /models            list models installed in Ollama
   /plan              show the current plan
+  /preview [/path|url] [ask]  start the dev server, screenshot the page, and let the vision model look
+  /preview stop      stop the dev server
   /agents [on|off]   show parallel helpers (planner, coders, tester, reviewer) or turn them on/off
   /undo              revert the last file change
   /rollback          undo everything Ember changed this session (git checkpoint)
@@ -39,6 +41,39 @@ ${c.bold('Commands')}
 ${c.bold('Tips')}  Describe what you want in plain words. Ember asks before every file change and command.
        Answer ${c.bold('a')} (always) to stop being asked for the rest of the session. Ctrl+C stops a running answer.
 `;
+
+/** Make sure the vision model is installed (asks before downloading). */
+export async function ensureVision({ ui, cfg }) {
+  const vmodel = cfg.visionModel || DEFAULT_VISION_MODEL;
+  const local = new OllamaClient(cfg.host);
+  try {
+    if (await local.hasModel(vmodel)) return true;
+    const ok = await ui.confirm(`Seeing the page needs the vision model ${vmodel} (about 3 GB, one-time). Download it now?`, { allowAlways: false });
+    if (ok !== 'y') { ui.warn('Continuing without the vision model (browser errors only).'); return false; }
+    await pullWithProgress(local, vmodel, ui);
+    return true;
+  } catch (e) { ui.warn(`Vision model unavailable: ${e.message}`); return false; }
+}
+
+export function previewDeps({ ui, cfg }) {
+  const vmodel = cfg.visionModel || DEFAULT_VISION_MODEL;
+  return {
+    ensureVision: () => ensureVision({ ui, cfg }),
+    describe: (p, question, signal) => describeImages({ client: new OllamaClient(cfg.host), model: vmodel, paths: [p], question: `${question} (Answer in under 120 words: what is on the page, and what looks broken. Do not write code.)`, signal })
+  };
+}
+
+export async function previewFlow({ agent, ui, cfg, rest, signal }) {
+  const { previewOnce, stopPreview } = await import('./preview.js');
+  const words = rest.trim().split(/\s+/).filter(Boolean);
+  if (words[0] === 'stop') { ui.ok((await stopPreview(agent)) ? 'Dev server stopped.' : 'No preview running.'); return null; }
+  const target = words[0] && (/^\//.test(words[0]) || /^https?:\/\//.test(words[0])) ? words.shift() : '';
+  const question = words.join(' ');
+  const r = await previewOnce({ agent, ui, cfg, target, question, signal, ...previewDeps({ ui, cfg }) });
+  ui.print('');
+  ui.print(r.report);
+  return { ...r, question };
+}
 
 /** If the prompt mentions images, let the local vision model describe them first. */
 export async function withImages({ agent, ui, cfg, text, paths }) {
@@ -145,6 +180,7 @@ export async function runRepl({ agent, ui, cfg, client }) {
   };
 
   const finish = async () => {
+    if (agent.preview) { const { stopPreview } = await import('./preview.js'); await stopPreview(agent).catch(() => {}); }
     if (agent.memory?.enabled && cfg.memory?.autoLearn !== false && agent.ctx.session.events.length + agent.ctx.session.said.length > 0) {
       ui.print(c.gray('learning from this session…'));
       const learned = await agent.learn().catch(() => []);
@@ -168,6 +204,16 @@ export async function runRepl({ agent, ui, cfg, client }) {
         case '/exit': case '/quit': case '/q': await finish(); return;
         case '/clear': agent.clear(); ui.ok('Conversation cleared.'); continue;
         case '/plan': ui.print(formatPlan(agent.ctx.plan)); continue;
+        case '/preview': {
+          controller = new AbortController();
+          try {
+            const r = await previewFlow({ agent, ui, cfg, rest, signal: controller.signal });
+            if (r?.question) { ui.print(''); await agent.runTask(`${r.question}\n\n${r.report}`, { signal: controller.signal }); ui.print(''); }
+            else if (r) agent.messages.push({ role: 'user', content: `${r.report}\n(Context only: the live preview I just looked at.)` }, { role: 'assistant', content: 'Noted. I can see the preview.' });
+          } catch (e) { if (controller.signal.aborted) ui.warn('Stopped.'); else ui.error(e.message); }
+          finally { controller = null; }
+          continue;
+        }
         case '/agents': {
           const { formatTeam } = await import('./team.js');
           if (rest === 'on' || rest === 'off') { cfg.team = { ...(cfg.team || {}), enabled: rest === 'on' }; ui.ok(`Parallel helpers ${rest} for this session`); }

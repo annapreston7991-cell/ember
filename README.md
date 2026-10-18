@@ -21,6 +21,7 @@ Ember plans, reads and writes files, runs commands, and builds projects right in
 - **Starts new projects:** `ember new "a todo app with a REST API"` plans the project, writes the files, installs dependencies and runs the tests.
 - **Explains code:** `ember explain server.js` gives a plain-language, read-only explanation.
 - **Understands screenshots:** `/image shot.png`, or any image path in your message, is read by a local vision model.
+- **Live preview:** `/preview` starts your dev server, takes a headless screenshot, and lets the vision model look at it. Browser errors are collected too.
 - **Watch mode:** `ember watch` re-runs your checks on every save and offers to fix failures.
 - **Parallel helpers:** big jobs are split into tasks. Coder helpers work on different files at the same time, then a tester runs your checks while a reviewer reads the diff. Use `/agents` to watch them.
 - **Knows your project:** a local index of files and symbols (plus optional meaning-based search with `nomic-embed-text`) points the model at the right files (see [Project index](#project-index)).
@@ -109,6 +110,7 @@ ember "the layout breaks like this: ./screenshots/bug.png"
 | `/model [name]` | show or switch the model (offers to pull it). `/model cloud:grok-4` switches to xAI |
 | `/models` | list installed models |
 | `/plan` | show the current plan |
+| `/preview [/path\|url] [question]` | start the dev server, screenshot the page, describe it, and collect browser errors (`/preview stop` stops the server) |
 | `/agents [on\|off]` | show the parallel helpers (planner, coders, tester, reviewer), or turn them on/off |
 | `/undo` | revert the last file change |
 | `/rollback` | undo everything Ember changed this session (restores the git checkpoint) |
@@ -251,6 +253,18 @@ Ember creates the folder and runs `git init`. It then plans the project, writes 
 ## Screenshots and images
 
 Use `/image path/to/shot.png fix the overlap`, or put any `.png`, `.jpg`, `.webp` or `.gif` path in your message. A local vision model (`visionModel`, default `qwen2.5vl:3b`; `llava` works too) describes the image precisely, including any error text, and that description is passed to the coding model. This means any coding model can "see." If the vision model isn't downloaded yet, Ember offers to download it the first time. Images are only read from paths you type.
+
+## Live preview
+
+`/preview` (or `ember preview [/path] [question]`) gives Ember eyes on your running app:
+
+1. **Starts your dev server.** It looks for a `dev`, `start`, `serve` or `preview` script in `package.json` (npm, pnpm, yarn or bun), Django's `manage.py`, or a folder with `index.html`. A folder with `index.html` gets a small built-in static server on 127.0.0.1. Ember **asks before starting the command**, unless it's allowlisted or you used `--yes`. It reads the URL from the server output, or probes the usual port for Vite, Next, Astro and the rest.
+2. **Takes a headless screenshot.** If your machine has Chrome, Chromium, Edge or Brave, nothing else is needed. If Playwright or Puppeteer is installed in the project or in `~/.ember/tools`, Ember uses it. With no browser at all, Ember offers to install Playwright + Chromium (~150 MB) into `~/.ember/tools`, **after asking**. If you say no, it falls back to a plain HTTP check.
+3. **Looks at the page.** The local vision model (`qwen2.5vl:3b`, downloaded only after asking) describes what's on screen. Console errors, page errors and failed requests are collected with the screenshot. All of this goes into the conversation.
+
+`/preview /checkout why is the total wrong?` hands the question and the preview to the agent, which can then fix the code. While the preview runs, the agent also gets a `preview_page` tool, so it can check the page again after a UI change. Screenshots are saved in `.ember/cache/preview/`, which is kept out of git. `/preview stop`, or quitting Ember, stops the dev server.
+
+Set `"preview": { "command": "make serve", "port": 8080, "width": 1280, "height": 800 }` in config for anything Ember can't detect.
 
 ## Watch mode
 

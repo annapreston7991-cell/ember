@@ -30,6 +30,7 @@ Usage
   ember "add a dark mode"   do one task and exit
   ember setup [--model m]   install/start Ollama and download a coding model
   ember doctor              check Ollama, the model and your config
+  ember preview [/path] [question]   start the dev server, screenshot it, describe it (vision)
   ember index [--embed|--clear|--query "text"]   build/update the project index (.ember/index)
   ember new "<idea>"        scaffold a new working project in a new folder
   ember explain <file|q>    plain-language explanation (read-only)
@@ -146,6 +147,13 @@ export async function main(argv) {
       const q = rest.join(' ').trim();
       if (!q) { ui.error('Usage: ember explain <file or question>'); return 1; }
       await agent.explain(explainPrompt(q, projectRoot));
+      return 0;
+    }
+    if (cmd === 'preview') {
+      const { previewFlow } = await import('./repl.js');
+      const { stopPreview } = await import('./preview.js');
+      try { await previewFlow({ agent, ui, cfg, rest: rest.join(' ') }); }
+      finally { await stopPreview(agent).catch(() => {}); }
       return 0;
     }
     if (cmd === 'watch') return await runWatch({ agent, ui, cfg, root: projectRoot });
