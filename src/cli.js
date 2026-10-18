@@ -30,6 +30,7 @@ Usage
   ember "add a dark mode"   do one task and exit
   ember setup [--model m]   install/start Ollama and download a coding model
   ember doctor              check Ollama, the model and your config
+  ember index [--embed|--clear|--query "text"]   build/update the project index (.ember/index)
   ember new "<idea>"        scaffold a new working project in a new folder
   ember explain <file|q>    plain-language explanation (read-only)
   ember watch               re-run tests/build on every change and offer fixes
@@ -84,6 +85,7 @@ export async function main(argv) {
     if (cmd === 'doctor') return (await runDoctor({ ui, root })) ? 0 : 1;
     if (cmd === 'memory') { await memoryCommand({ ui, root, args: rest, yes: opts.yes }); return 0; }
     if (cmd === 'help') { console.log(USAGE); return 0; }
+    if (cmd === 'index') return await indexCommand({ ui, root, args: rest, cfg: loadConfig() });
 
     const cfg = loadConfig();
     if (opts.model) cfg.model = opts.model;
@@ -159,4 +161,34 @@ export async function main(argv) {
   } finally {
     ui.close();
   }
+}
+
+async function indexCommand({ ui, root, args, cfg }) {
+  const { updateIndex, retrieve, formatHits, indexDir, makeEmbedder } = await import('./indexer.js');
+  const { OllamaClient } = await import('./ollama.js');
+  const fsm = await import('node:fs');
+  const dir = indexDir(root);
+  if (args.includes('--clear')) { fsm.rmSync(dir, { recursive: true, force: true }); ui.ok(`Removed ${dir}`); return 0; }
+  const ic = cfg.index || {};
+  const client = new OllamaClient(cfg.host, { keepAlive: cfg.keepAlive });
+  const model = ic.embedModel || 'nomic-embed-text';
+  let haveEmbed = await client.hasModel(model, { timeoutMs: 2000 }).catch(() => false);
+  if (args.includes('--embed') && !haveEmbed) {
+    if ((await ui.confirm(`Download the embedding model ${model} (~270 MB)?`, { allowAlways: false })) === 'y') {
+      const { pullWithProgress } = await import('./setup.js');
+      await pullWithProgress(client, model, ui); haveEmbed = true;
+    }
+  }
+  const useEmbed = haveEmbed && ic.embeddings !== false;
+  const qi = args.indexOf('--query');
+  const emb = useEmbed ? makeEmbedder(client, model) : null;
+  if (emb && !fsm.existsSync(`${dir}/vectors.json`)) ui.print(c.gray(`  embedding the project with ${model} (first time only; later runs only embed changed files)…`));
+  const stats = await updateIndex(root, emb ? { embed: emb.embed, embedModel: model } : {});
+  ui.ok(`Index: ${stats.files} files, ${stats.symbols} symbols (${stats.changed} updated, ${stats.removed} removed${useEmbed ? `, ${stats.embedded} chunks embedded with ${model}` : ', keywords + symbols only'}) in ${(stats.ms / 1000).toFixed(1)}s`);
+  ui.print(c.gray(`  stored in ${dir}`));
+  if (qi >= 0 && args[qi + 1]) {
+    const hits = await retrieve(root, args.slice(qi + 1).join(' '), { k: 8, embedQuery: emb ? emb.embedQuery : null });
+    ui.print(formatHits(hits, 2000) || 'No matches.');
+  }
+  return 0;
 }

@@ -47,14 +47,14 @@ export class OllamaClient {
     } catch { return null; }
   }
 
-  async listModels() {
-    const r = await fetch(`${this.host}/api/tags`);
+  async listModels({ timeoutMs } = {}) {
+    const r = await fetch(`${this.host}/api/tags`, timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {});
     if (!r.ok) throw new Error(`Ollama /api/tags failed: ${r.status}`);
     return (await r.json()).models || [];
   }
 
-  async hasModel(name) {
-    const models = await this.listModels();
+  async hasModel(name, opts) {
+    const models = await this.listModels(opts);
     const want = name.includes(':') ? name : `${name}:latest`;
     return models.some((m) => m.name === want || m.model === want || m.name === name);
   }
@@ -76,6 +76,16 @@ export class OllamaClient {
     } catch { /* unknown */ }
     this._caps.set(model, result);
     return result;
+  }
+
+  /** Embeddings for a batch of texts via /api/embed. */
+  async embed(model, input) {
+    const r = await fetch(`${this.host}/api/embed`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model, input, keep_alive: this.keepAlive })
+    });
+    if (!r.ok) throw new Error(`embed failed: ${r.status} ${await r.text()}`);
+    return (await r.json()).embeddings || [];
   }
 
   async pull(model, onProgress = () => {}) {

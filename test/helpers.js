@@ -13,6 +13,7 @@ import { UI } from '../src/ui.js';
 export function mockOllama({ tools = true, script = [], models = ['mock:latest'], plan = '{"steps":[]}' } = {}) {
   const requests = [];
   const planRequests = [];
+  const embedRequests = [];
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (d) => (body += d));
@@ -22,6 +23,7 @@ export function mockOllama({ tools = true, script = [], models = ['mock:latest']
       if (req.url === '/api/tags') return res.end(JSON.stringify({ models: models.map((name) => ({ name, model: name, size: 1 })) }));
       if (req.url === '/api/show') return res.end(JSON.stringify({ capabilities: tools ? ['completion', 'tools'] : ['completion'] }));
       if (req.url === '/api/generate') return res.end(JSON.stringify({ done: true }));
+      if (req.url === '/api/embed') { embedRequests.push(j); return res.end(JSON.stringify({ embeddings: [].concat(j.input).map(toyEmbed) })); }
       if (req.url === '/api/chat' && /^Split the developer/.test(j.messages?.[0]?.content || '')) {
         planRequests.push(j);
         return res.end(JSON.stringify({ message: { role: 'assistant', content: typeof plan === 'function' ? plan(j) : plan }, done: true }) + '\n');
@@ -36,7 +38,7 @@ export function mockOllama({ tools = true, script = [], models = ['mock:latest']
       res.statusCode = 404; res.end('{}');
     });
   });
-  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, requests, planRequests, url: `http://127.0.0.1:${server.address().port}` })));
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, requests, planRequests, embedRequests, url: `http://127.0.0.1:${server.address().port}` })));
 }
 
 export function quietUI(answers = [], { yes = false } = {}) {
@@ -51,3 +53,15 @@ export function quietUI(answers = [], { yes = false } = {}) {
 export function tmpdir(prefix = 'ember-') { return fs.mkdtempSync(path.join(os.tmpdir(), prefix)); }
 
 export const call = (name, args) => ({ tool_calls: [{ function: { name, arguments: args } }] });
+
+/** Deterministic toy embedding: hashed bag of words with a few synonyms folded together. */
+const SYN = { login: 'auth', signin: 'auth', password: 'auth', authenticate: 'auth', credentials: 'auth' };
+export function toyEmbed(text) {
+  const v = new Array(64).fill(0);
+  for (let w of String(text).toLowerCase().match(/[a-z]+/g) || []) {
+    w = SYN[w] || w;
+    let h = 0; for (const ch of w) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    v[h % 64] += 1;
+  }
+  return v;
+}

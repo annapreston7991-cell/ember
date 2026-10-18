@@ -198,3 +198,17 @@ test('destructive commands are refused under --yes without a human', async () =>
   assert.match(text(), /Refusing dangerous action/);
   server.close();
 });
+
+test('a JSON call to a tool that does not exist gets one nudge, then the plain answer is returned', async () => {
+  const root = project();
+  const { server, requests, url } = await mockOllama({ tools: false, script: [{ content: '{"name": "isDestructive", "arguments": {"cmd": "rm -rf /"}}' }, { content: 'src/safety.js, isDestructive().' }] });
+  try {
+    const { ui } = quietUI([], { yes: true });
+    const cfg = { ...structuredClone(DEFAULTS), host: url, model: 'mock' };
+    const agent = new Agent({ cfg, root, ui, client: new OllamaClient(url), memory: new Memory(root, { ...cfg, memory: { enabled: false } }) });
+    await agent.init();
+    const out = await agent.run('which function checks destructive commands?');
+    assert.equal(out, 'src/safety.js, isDestructive().');
+    assert.match(requests[1].messages.at(-1).content, /no tool named "isDestructive"/);
+  } finally { server.close(); }
+});

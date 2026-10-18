@@ -22,6 +22,7 @@ Ember plans, reads and writes files, runs commands, and builds projects right in
 - **Explains code:** `ember explain server.js` gives a plain-language, read-only explanation.
 - **Understands screenshots:** `/image shot.png`, or any image path in your message, is read by a local vision model.
 - **Watch mode:** `ember watch` re-runs your checks on every save and offers to fix failures.
+- **Knows your project:** a local index of files and symbols (plus optional meaning-based search with `nomic-embed-text`) points the model at the right files (see [Project index](#project-index)).
 - **Plugins:** add your own tools with a small JS file.
 - **Optional extras:** web lookup and cloud models (xAI Grok or any OpenAI-compatible API). Both are off by default.
 
@@ -79,7 +80,8 @@ If you use `nvm`, global installs already go to a folder you own; just make sure
 
 4. Downloads the model with a progress bar.
 5. Optionally downloads the vision model `qwen2.5vl:3b` (~3 GB) so Ember can read screenshots. Use `ember setup --vision` to get it without the question.
-6. Saves settings to `~/.ember/config.json`, readable only by you (mode 600).
+6. Optionally downloads the embedding model `nomic-embed-text` (~270 MB) so the [project index](#project-index) can search by meaning.
+7. Saves settings to `~/.ember/config.json`, readable only by you (mode 600).
 
 To choose a model yourself, run `ember setup --model qwen2.5-coder:14b`. Any Ollama model works (for example `--model llama3.1:8b`).
 
@@ -91,6 +93,7 @@ ember                                  # interactive session
 ember "add a /health route to server.js and a test for it"
 ember -y "run the tests and fix whatever fails"   # auto-approve (dangerous commands still ask)
 ember doctor                           # check Ollama, model, config
+ember index                            # build/update the project index
 ember new "a URL shortener with Express and SQLite"
 ember explain src/auth.js              # or: ember explain "how does login work?"
 ember watch                            # tests on every save, fixes on request
@@ -117,6 +120,7 @@ ember "the layout breaks like this: ./screenshots/bug.png"
 | `/forget <words>` | forget matching notes |
 | `/memory` | show what Ember knows about you and this project |
 | `/prefs` | show preferences, approval habits and settings |
+| `/index [query]` | rebuild the project index, or show the files that match a query |
 | `/exit` | quit (Ember learns from the session first) |
 
 Press **Ctrl+C** to stop a running answer, or press it twice at the prompt to quit.
@@ -175,6 +179,25 @@ ember --no-memory "..."   # one run without memory
 ```
 
 In `~/.ember/config.json`, `"memory": { "enabled": false }` turns memory off and `"autoLearn": false` keeps memory while stopping automatic learning.
+
+## Project index
+
+Ember keeps a small index of your project in `.ember/index/`. It holds a file map, the symbols in each file (functions, classes, routes, headings) and the important words. When you send a message, Ember looks up the files that fit best and adds them to your message as hints. The model then opens the right files first instead of guessing. The model can also call a read-only `find_code` tool.
+
+- **Automatic and incremental:** the index is built the first time you open Ember in a project with up to 3,000 files. After that, only files whose size, mtime or content changed are re-read, and it updates again after Ember edits files. It follows `.gitignore` and skips `node_modules`, lockfiles and binaries.
+- **Optional embeddings:** with `nomic-embed-text` installed (`ember setup` offers it, or run `ember index --embed`), Ember also embeds 60-line chunks of each file and blends keyword and meaning-based scores. Only changed files are embedded again.
+- **Stays out of git:** `.ember/.gitignore` keeps the index out of your commits. The index never leaves your machine.
+
+```bash
+ember index                         # build or update (keywords + symbols)
+ember index --embed                 # also embed (pulls nomic-embed-text after asking)
+ember index --query "where are sessions created"
+ember index --clear                 # delete the index
+```
+
+Turn the index off with `"index": { "enabled": false }`. Turn just the embeddings off with `"embeddings": false`.
+
+Measured on Ember's own repo (44 files) with 12 "where is X?" questions, each with one correct file. Keywords and symbols alone put the right file first 10 times out of 12. With embeddings it was first 11 times out of 12. Both put it in the top 3 every time. A query takes about 4 ms with keywords and about 40 ms with embeddings on CPU. Building the embeddings the first time took 46 s on this CPU-only box, and later updates only cost a second or two.
 
 ## Git: checkpoints, rollback, commits
 
@@ -312,6 +335,7 @@ Measured on a CPU-only test box (8 threads, 16 GB RAM, no GPU, `qwen2.5-coder:7b
   "cloud": { "defaultProvider": "grok" },
   "providers": {},
   "plugins": { "enabled": true },
+  "index": { "enabled": true, "embeddings": true, "embedModel": "nomic-embed-text", "autoMaxFiles": 3000, "hints": 6 },
   "watch": { "debounceMs": 600, "intervalMs": 1000 }
 }
 ```

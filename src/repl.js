@@ -32,6 +32,7 @@ ${c.bold('Commands')}
   /forget <words>    forget matching notes
   /memory            show what Ember has learned
   /prefs             show preferences, approval habits and settings
+  /index [query]     rebuild the project index, or show files matching a query
   /exit              quit (Ember learns from the session first)
 
 ${c.bold('Tips')}  Describe what you want in plain words. Ember asks before every file change and command.
@@ -264,6 +265,13 @@ export async function runRepl({ agent, ui, cfg, client }) {
           continue;
         }
         case '/memory': showMemory(ui, agent.memory); continue;
+        case '/index': {
+          try {
+            if (rest) { const { formatHits } = await import('./indexer.js'); ui.print(formatHits(await agent.findCode(rest, 8), 2000) || 'No matches (is the index built? run /index).'); }
+            else { const st = await agent.initIndex({ force: true }); ui.ok(st ? `Index: ${st.files} files, ${st.symbols} symbols, ${st.changed} updated${st.embedded ? `, ${st.embedded} chunks embedded` : ''} (${(st.ms / 1000).toFixed(1)}s)` : `Index unavailable${agent.indexError ? `: ${agent.indexError}` : ''}`); }
+          } catch (e) { ui.warn(e.message); }
+          continue;
+        }
         case '/prefs': showPrefs(ui, agent.memory, cfg); continue;
         default: ui.warn(`Unknown command ${cmd}. Type /help.`); continue;
       }

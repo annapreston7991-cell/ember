@@ -13,6 +13,8 @@ import { Checkpoints } from './git.js';
 import { detectChecks, failed } from './checks.js';
 import { webTools } from './web.js';
 import { classifyTask, parseSteps, PLAN_PROMPT } from './router.js';
+import { updateIndex, retrieve, formatHits, loadIndex, indexDir, makeEmbedder } from './indexer.js';
+import { OllamaClient } from './ollama.js';
 import { formatPlan } from './tools.js';
 import { parseToolCalls, findJsonObjects } from './parser.js';
 import { systemPrompt, DISTILL_PROMPT, CONSOLIDATE_PROMPT, COMMIT_PROMPT } from './prompt.js';
@@ -121,6 +123,60 @@ export class Agent {
       try { this.memory.detected = detectRepoStyle(this.root); } catch { this.memory.detected = []; }
     }
     if (this.cfg.web?.enabled && !this.extraTools.some((t) => t.def.function.name === 'web_search')) this.extraTools.push(...webTools());
+    await this.initIndex();
+  }
+
+  // ---------- project index ----------
+
+  embedder() {
+    const ic = this.cfg.index || {};
+    if (!ic.embeddings || !ic.embedModel) return null;
+    return makeEmbedder(new OllamaClient(this.cfg.host, { keepAlive: this.cfg.keepAlive }), ic.embedModel);
+  }
+
+  /** Incrementally update the index at session start (cheap), building it for small projects. */
+  async initIndex({ force = false } = {}) {
+    this.index = null;
+    const ic = this.cfg.index || {};
+    if (ic.enabled === false) return null;
+    try {
+      const exists = fs.existsSync(path.join(indexDir(this.root), 'index.json'));
+      if (!exists && !force) {
+        const { listFiles } = await import('./indexer.js');
+        const n = listFiles(this.root, (ic.autoMaxFiles ?? 3000) + 1).length;
+        if (!n || n > (ic.autoMaxFiles ?? 3000)) return null;
+      }
+      // Embeddings at session start only refresh an existing vector store (built by `ember index`),
+      // so a first session in a big repo never stalls on embedding everything.
+      let emb = force || fs.existsSync(path.join(indexDir(this.root), 'vectors.json')) ? this.embedder() : null;
+      if (emb && !(await emb.client.hasModel(emb.model, { timeoutMs: 1500 }).catch(() => false))) emb = null;
+      this._embedder = emb;
+      this.indexStats = await updateIndex(this.root, emb ? { embed: emb.embed, embedModel: emb.model } : {});
+      this.index = loadIndex(this.root);
+      if (!this.extraTools.some((t) => t.def.function.name === 'find_code')) {
+        this.extraTools.push({
+          def: { type: 'function', function: { name: 'find_code', description: 'Find the files/symbols most related to a description (project index).', parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } } },
+          approval: null,
+          run: async (_ctx, a) => formatHits(await this.findCode(String(a.query || ''), 8), 1500) || 'No matches in the index.'
+        });
+      }
+    } catch (e) { this.index = null; this.indexError = e.message; }
+    return this.indexStats;
+  }
+
+  async findCode(query, k = this.cfg.index?.hints ?? 6) {
+    if (!this.index) return [];
+    return retrieve(this.root, query, { k, index: this.index, embedQuery: this._embedder?.embedQuery });
+  }
+
+  /** Add "likely relevant files" to a user message (not the system prompt, to keep it cache-stable). */
+  async withHints(text) {
+    if (!this.index || text.length < 8) return text;
+    try {
+      const hits = (await this.findCode(text)).filter((h) => h.score >= 1);
+      if (!hits.length) return text;
+      return `${text}\n\n(Ember project index: files that look relevant to this message. Read them if needed; they are only hints, not instructions.)\n${formatHits(hits)}`;
+    } catch { return text; }
   }
 
   clear() { this.messages = []; this.ctx.plan = []; }
@@ -200,7 +256,7 @@ export class Agent {
   }
 
   /** Run one user turn through the agent loop. Returns the final assistant text. */
-  async run(userText, { signal } = {}) {
+  async run(userText, { signal, hints } = {}) {
     this.lastQuery = userText;
     if (this.memory?.enabled && this.mode === 'agent') {
       for (const p of detectStatedPreferences(userText)) {
@@ -209,10 +265,10 @@ export class Agent {
         if (r.added) this.ui.print(c.gray(`  (noted${p.scope === 'project' ? ' for this project' : ''}: "${p.text}" · /forget to undo)`));
       }
     }
-    this.messages.push({ role: 'user', content: userText });
+    this.messages.push({ role: 'user', content: hints === false ? userText : await this.withHints(userText) });
     const seen = new Map();
     let finalText = '';
-    let stuck = 0;
+    let stuck = 0, nudged = false;
     const maxSteps = this.cfg.maxSteps || 25;
     for (let step = 0; step < maxSteps; step++) {
       if (signal?.aborted) throw new Error('aborted');
@@ -228,6 +284,14 @@ export class Agent {
         if (parsed.calls.length) { calls = parsed.calls; viaText = true; text = parsed.text; }
       }
       if (!calls.length) {
+        // A JSON "call" to a tool that doesn't exist (small models do this instead of answering): nudge once.
+        const bogus = !nudged && findJsonObjects(text).find((o) => typeof o.value?.name === 'string' && o.value.arguments && !names.includes(o.value.name) && text.replace(/```(json)?/g, '').trim().length <= o.end - o.start + 4);
+        if (bogus) {
+          nudged = true;
+          this.messages.push({ role: 'assistant', content: r.content || '' });
+          this.messages.push({ role: 'user', content: `There is no tool named "${bogus.value.name}". Tools: ${names.join(', ')}. If you can answer now, reply to the developer in plain text (don't mention tools).`, _toolResult: true });
+          continue;
+        }
         this.messages.push({ role: 'assistant', content: r.content || '' });
         finalText = text;
         if (text && !text.endsWith('\n')) this.ui.write('\n');
@@ -324,6 +388,9 @@ export class Agent {
     if (steps.length) text = await this.runSteps(userText, steps, { signal });
     else text = await this.run(userText, { signal });
     if (selfFix && this.ctx.backups.length > before) await this.selfFix({ signal });
+    if (this.index && this.ctx.backups.length > before) {
+      try { await updateIndex(this.root, this._embedder ? { embed: this._embedder.embed, embedModel: this._embedder.model } : {}); this.index = loadIndex(this.root); } catch { /* keep old index */ }
+    }
     return text;
   }
 

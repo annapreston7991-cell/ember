@@ -3,6 +3,7 @@
  * Licensed under the LLYVerse License 1.0. See LICENSE. Credit to LLYVerse is required.
  */
 import fs from 'node:fs';
+import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { OllamaClient, ollamaBinary } from './ollama.js';
 import { loadConfig, configPath } from './config.js';
@@ -58,6 +59,12 @@ export async function runDoctor({ ui, root }) {
   ui.print(c.green('✓ ') + `Memory: ${mem ? 'on' : 'off'}${mem ? ` · profile ${fs.existsSync(profilePath()) ? profilePath() : '(empty)'}` : ''}`);
   if (mem && root && fs.existsSync(projectMemoryPath(root))) ui.print(c.green('✓ ') + `Project memory: ${projectMemoryPath(root)}`);
   ui.print(c.green('✓ ') + `Allowlisted commands: ${cfg.allowlist.length}`);
+  if (cfg.index?.enabled !== false) {
+    const ip = root && path.join(root, '.ember', 'index', 'index.json');
+    let n = 0; try { n = Object.keys(JSON.parse(fs.readFileSync(ip, 'utf8')).files || {}).length; } catch { /* none yet */ }
+    let emb = false; try { emb = v ? await client.hasModel(cfg.index?.embedModel || 'nomic-embed-text') : false; } catch { /* offline */ }
+    ui.print((n ? c.green('✓ ') : c.gray('· ')) + `Project index: ${n ? `${n} files` : 'not built yet (ember index)'} · embeddings ${emb ? `on (${cfg.index?.embedModel || 'nomic-embed-text'})` : 'off (keywords + symbols)'}`);
+  } else ui.print(c.gray('· Project index: off'));
 
   ui.print('');
   if (problems) ui.print(c.yellow(`${problems} problem(s) found.`)); else ui.print(c.green('All good. Ember is ready.'));

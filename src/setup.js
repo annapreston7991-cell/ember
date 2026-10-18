@@ -114,7 +114,18 @@ export async function runSetup({ ui, model: forcedModel, yes, vision, askVision 
     } else ui.print(c.gray(`  skipped. Later: ember setup --vision (or Ember will offer it the first time you share an image)`));
   }
 
-  // 6. Config
+  // 6. Optional embedding model for the project index (better "find the right file")
+  const emodel = cfg.index?.embedModel || 'nomic-embed-text';
+  if (await client.hasModel(emodel)) ui.ok(`Embedding model ${emodel} is ready (smarter project index)`);
+  else {
+    const want = (yes || !askVision) ? 'n' : await ui.confirm(`Optional: download ${emodel} (~270 MB) so the project index can search by meaning?`, { allowAlways: false });
+    if (want === 'y') {
+      try { await pullWithProgress(client, emodel, ui); ui.ok(`${emodel} downloaded`); }
+      catch (e) { ui.warn(`Embedding model download failed (${e.message}). The index still works with keywords and symbols.`); }
+    } else ui.print(c.gray(`  skipped. The index still works with keywords and symbols. Later: ollama pull ${emodel}`));
+  }
+
+  // 7. Config
   cfg.model = model;
   cfg.lastLocalModel = model;
   if (fastModel && (await client.hasModel(fastModel))) cfg.fastModel = fastModel;
