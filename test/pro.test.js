@@ -126,7 +126,8 @@ test('no private key material or secrets are committed', () => {
   for (const f of files) {
     if (/\.(png|vsix|ico)$/.test(f)) continue;
     const t = fs.readFileSync(path.join(here, '..', f), 'utf8');
-    assert.doesNotMatch(t, /-----BEGIN (?:ENCRYPTED |RSA |EC |OPENSSH )?PRIVATE KEY-----\n[A-Za-z0-9+/]/, f);
-    assert.doesNotMatch(t, /\b(sk_live|rk_live|xai-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,})/, f);
+    // Patterns are assembled from pieces so this file doesn't match itself.
+    assert.doesNotMatch(t, new RegExp('-----BEGIN (?:ENCRYPTED |RSA |EC |OPENSSH )?PRIV' + 'ATE KEY-----\\n[A-Za-z0-9+/]'), f);
+    assert.doesNotMatch(t, new RegExp('\\b(' + ['sk', 'rk'].map((x) => x + '_live_[A-Za-z0-9]{10,}').join('|') + '|xai-[A-Za-z0-9]{20,}|gh' + 'p_[A-Za-z0-9]{20,})'), f);
   }
 });
