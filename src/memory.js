@@ -7,6 +7,7 @@
 //   <project>/.ember/memory.md per-project notes (plain Markdown, hand-editable)
 // No network calls, no telemetry.
 import fs from 'node:fs';
+import { isPro, requirePro } from './pro.js';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { emberHome } from './config.js';
@@ -207,6 +208,8 @@ export function recordApproval(approvals, cmd, approved, { suggestAfter = 3, now
 
 export function profilePath() { return path.join(emberHome(), 'profile.json'); }
 export function projectMemoryPath(root) { return path.join(root, '.ember', 'memory.md'); }
+/** Team memory (Ember Pro): curated notes committed to the repo and shared with everyone on it. */
+export function teamMemoryPath(root) { return path.join(root, '.ember', 'team.md'); }
 
 export function emptyProfile() { return { version: 1, notes: [], approvals: {}, updated: null }; }
 
@@ -262,6 +265,10 @@ export function serializeMemoryMd(notes) {
   return lines.join('\n') + '\n';
 }
 
+export function loadNotesFile(p) {
+  try { const st = fs.statSync(p); return parseMemoryMd(fs.readFileSync(p, 'utf8'), { fallbackTs: st.mtime.toISOString() }); } catch { return []; }
+}
+
 export function loadProjectNotes(root) {
   const p = projectMemoryPath(root);
   try {
@@ -284,6 +291,8 @@ export class Memory {
     this.enabled = cfg.memory?.enabled !== false;
     this.profile = this.enabled ? loadProfile() : emptyProfile();
     this.project = this.enabled ? loadProjectNotes(root) : [];
+    this.teamOn = this.enabled && isPro(cfg);
+    this.team = this.teamOn ? loadNotesFile(teamMemoryPath(root)) : [];
     this.detected = [];
   }
 
@@ -291,6 +300,15 @@ export class Memory {
 
   remember(text, { scope = 'global', source = 'explicit' } = {}) {
     if (!this.enabled) return { added: false, replaced: [] };
+    if (scope === 'team') {
+      requirePro(this.cfg, 'team-memory');
+      const note = makeNote(text, { scope: 'project', source });
+      const r = addNote(this.team, note);
+      this.team = compactNotes(r.notes, this.maxNotes);
+      fs.mkdirSync(path.dirname(teamMemoryPath(this.root)), { recursive: true });
+      fs.writeFileSync(teamMemoryPath(this.root), serializeMemoryMd(this.team));
+      return { ...r, note };
+    }
     const note = makeNote(text, { scope, source });
     if (scope === 'project') {
       const r = addNote(this.project, note);
@@ -328,7 +346,7 @@ export class Memory {
   forPrompt(query) {
     if (!this.enabled) return '';
     return renderMemory({
-      global: this.profile.notes, project: this.project, detected: this.detected,
+      global: this.profile.notes, project: [...this.team.map((n) => ({ ...n, text: n.text.startsWith('(team) ') ? n.text : `(team) ${n.text}` })), ...this.project], detected: this.detected,
       query, maxChars: this.cfg.memory?.maxPromptChars ?? 1800
     });
   }

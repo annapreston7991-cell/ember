@@ -53,7 +53,7 @@ export const DEFAULTS = {
   team: { enabled: true, maxParallel: 2, review: true },
   index: { enabled: true, embeddings: true, embedModel: 'nomic-embed-text', autoMaxFiles: 3000, hints: 6 },
   watch: { debounceMs: 600, intervalMs: 1000 },
-  pro: { enabled: false }                  // hook for a future Pro tier; nothing is gated today
+  pro: {}                                  // Ember Pro license: `ember pro activate <key>` (or EMBER_PRO_KEY)
 };
 
 function deepMerge(base, extra) {

@@ -23,6 +23,7 @@ ${c.bold('Commands')}
   /preview [/path|url] [ask]  start the dev server, screenshot the page, and let the vision model look
   /preview stop      stop the dev server
   /voice             say your next request (local speech-to-text); answers are spoken if TTS exists
+  /pro [activate <key>]  Ember Pro status (cloud models, team memory, premium plugins)
   /agents [on|off]   show parallel helpers (planner, coders, tester, reviewer) or turn them on/off
   /undo              revert the last file change
   /rollback          undo everything Ember changed this session (git checkpoint)
@@ -320,14 +321,17 @@ export async function runRepl({ agent, ui, cfg, client }) {
         }
         case '/remember': {
           if (!agent.memory?.enabled) { ui.warn('Memory is off (ember memory on).'); continue; }
-          const project = /(^|\s)--project\b/.test(rest);
-          const text = rest.replace(/(^|\s)--(project|global)\b/g, ' ').trim();
-          if (!text) { ui.print('Usage: /remember [--project] <note>'); continue; }
-          const r = agent.memory.remember(text, { scope: project ? 'project' : 'global', source: 'explicit' });
-          ui.ok(`Remembered${project ? ' for this project' : ''}: ${text}`);
-          if (r.replaced?.length) ui.print(c.gray(`  replaces: ${r.replaced.map((x) => x.text).join('; ')}`));
+          const scope = /(^|\s)--team\b/.test(rest) ? 'team' : /(^|\s)--project\b/.test(rest) ? 'project' : 'global';
+          const text = rest.replace(/(^|\s)--(project|global|team)\b/g, ' ').trim();
+          if (!text) { ui.print('Usage: /remember [--project|--team] <note>'); continue; }
+          try {
+            const r = agent.memory.remember(text, { scope, source: 'explicit' });
+            ui.ok(`Remembered${scope === 'project' ? ' for this project' : scope === 'team' ? ' for the team (.ember/team.md — commit it to share)' : ''}: ${text}`);
+            if (r.replaced?.length) ui.print(c.gray(`  replaces: ${r.replaced.map((x) => x.text).join('; ')}`));
+          } catch (e) { ui.warn(e.message); }
           continue;
         }
+        case '/pro': { const { proCommand } = await import('./pro.js'); await proCommand({ ui, args: restArr, cfg }); continue; }
         case '/forget': {
           if (!rest) { ui.print('Usage: /forget <id or words>'); continue; }
           const removed = agent.memory?.forget(rest) || [];

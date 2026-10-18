@@ -28,7 +28,7 @@ Ember plans, reads and writes files, runs commands, and builds projects right in
 - **Parallel helpers:** big jobs are split into tasks. Coder helpers work on different files at the same time, then a tester runs your checks while a reviewer reads the diff. Use `/agents` to watch them.
 - **Knows your project:** a local index of files and symbols (plus optional meaning-based search with `nomic-embed-text`) points the model at the right files (see [Project index](#project-index)).
 - **Plugins:** add your own tools with a small JS file.
-- **Optional extras:** web lookup and cloud models (xAI Grok or any OpenAI-compatible API). Both are off by default.
+- **Optional extras:** web lookup (off by default). [Ember Pro](#ember-pro) adds cloud models (xAI Grok or any OpenAI-compatible API), team memory and premium plugins.
 
 ## Install
 
@@ -330,7 +330,7 @@ Ember asks before **each** lookup (or "always" for the session). Local and priva
 
 ## Cloud models (optional)
 
-Local Ollama is always the default. If you want a bigger model for a hard task, you can switch to any OpenAI-compatible API:
+Local Ollama is always the default, and it's free. Cloud models are part of [Ember Pro](#ember-pro). With Pro active, you can switch to any OpenAI-compatible API when a hard task needs a bigger model. You bring your own API key:
 
 ```bash
 export XAI_API_KEY=...            # from console.x.ai
@@ -441,7 +441,7 @@ The code lives in `src/`:
 - `tools.js`, `safety.js`, `parser.js` (JSON tool-call fallback)
 - `memory.js` and `style.js`: the learning layer
 - `git.js`, `checks.js`, `vision.js`, `web.js`, `cloud.js`, `clients.js`, `plugins.js`, `watch.js`
-- `pro.js`: the future Pro hook
+- `pro.js`, `license.js`, `pro-public-key.js`: Ember Pro license checks (offline, Ed25519)
 - `ollama.js`, `setup.js`, `doctor.js`, `repl.js`, `cli.js`
 
 ## Roadmap
@@ -451,12 +451,28 @@ The code lives in `src/`:
 - [ ] Optional sandboxed command runner (containers)
 - [ ] MCP tool servers as plugins
 - [ ] Native image input for coding models that support vision
-- [ ] **Ember Pro** (planned, about $9/month through the LLYVerse store and Stripe):
-  - hosted cloud-model credits, so you don't need your own API key
-  - team memory shared across a team
-  - premium plugins
 
-  Ember itself stays free and local. The hook is `src/pro.js` (`isPro()`), and plugins can set `pro: true`. There is no billing code yet, and nothing that is free today will be gated.
+## Ember Pro
+
+Ember Pro costs **$9/month** and is sold on the LLYVerse site. It adds:
+
+| Pro feature | What it is |
+|---|---|
+| **Cloud models** | `cloud:grok-4` (xAI) and any OpenAI-compatible provider, using your own API key |
+| **Team memory** | `/remember --team "we deploy with Fly.io"` writes to `.ember/team.md`. Commit it, and everyone on the repo with Pro gets those notes in Ember's prompt |
+| **Premium plugins** | plugins marked `pro: true` |
+
+**Everything else is free and stays free:** local models, tools, safety, memory, project index, parallel helpers, live preview, voice and the editor extension.
+
+```bash
+ember pro                      # status
+ember pro activate EMBER-PRO-… # saves the key to ~/.ember/license.key (mode 600)
+ember pro deactivate
+```
+
+Ember also reads the key from `EMBER_PRO_KEY` or from `"pro": { "licenseKey": "…" }` in the config. **Keys are checked offline.** A key is a small signed payload: license id, plan, seats, issue date and expiry. It holds no personal data. The Ed25519 signature is checked against the public key in [`src/pro-public-key.js`](src/pro-public-key.js). Nothing is sent anywhere. A key keeps working for 3 days past its expiry, so a late renewal while you're offline doesn't lock you out.
+
+For maintainers: `scripts/pro-keygen.mjs` creates a signing key pair and refuses to write the private key inside the repo. `scripts/pro-sign.mjs --id <subscription id> --days 35` issues a key. The private key is never committed. A test scans every tracked file for private keys and live tokens.
 
 ## License
 

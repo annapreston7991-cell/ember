@@ -82,7 +82,7 @@ export async function loadPlugins({ root, cfg = {}, confirmTrust = async () => f
       const p = mod.default || mod.plugin;
       const err = validatePlugin(p);
       if (err) { skipped.push({ file, reason: err }); continue; }
-      if (p.pro && !isPro(cfg)) { skipped.push({ file, reason: 'requires Ember Pro (coming soon)' }); continue; }
+      if (p.pro && !isPro(cfg)) { skipped.push({ file, reason: 'premium plugin: requires Ember Pro (ember pro)' }); continue; }
       if (tools.some((t) => t.def.function.name === p.name)) { skipped.push({ file, reason: `duplicate tool ${p.name}` }); continue; }
       tools.push({
         plugin: true, file, scope,

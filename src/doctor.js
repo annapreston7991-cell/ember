@@ -64,6 +64,11 @@ export async function runDoctor({ ui, root }) {
     const vs = voiceStatus(cfg);
     ui.print((vs.stt ? c.green('✓ ') : c.gray('· ')) + `Voice (optional): mic ${vs.rec || 'none'} · speech-to-text ${vs.stt || 'not installed (ember voice offers faster-whisper)'} · speech ${vs.tts || 'none'}`);
   }
+  {
+    const { proStatus } = await import('./pro.js');
+    const ps = proStatus(cfg);
+    ui.print((ps.pro ? c.green('✓ ') : c.gray('· ')) + `Ember Pro: ${ps.pro ? `active until ${ps.expires}` : `not active${ps.from ? ` (${ps.reason})` : ''} — every local feature is free`}`);
+  }
   if (cfg.index?.enabled !== false) {
     const ip = root && path.join(root, '.ember', 'index', 'index.json');
     let n = 0; try { n = Object.keys(JSON.parse(fs.readFileSync(ip, 'utf8')).files || {}).length; } catch { /* none yet */ }

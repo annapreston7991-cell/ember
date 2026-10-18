@@ -24,6 +24,10 @@ export function showMemory(ui, memory) {
   ui.print(memory.profile.notes.length ? memory.profile.notes.map(line).join('\n') : c.gray('  (nothing yet — try /remember I use 2-space indentation)'));
   ui.print(c.bold('This project') + c.gray(`  ${projectMemoryPath(memory.root)}`));
   ui.print(memory.project.length ? memory.project.map(line).join('\n') : c.gray('  (nothing yet)'));
+  if (memory.teamOn || memory.team?.length) {
+    ui.print(c.bold('Team (Ember Pro)') + c.gray(`  ${path.join(memory.root, '.ember', 'team.md')} — commit it to share`));
+    ui.print(memory.team.length ? memory.team.map(line).join('\n') : c.gray('  (nothing yet — /remember --team <note>)'));
+  }
   const det = memory.detected?.length ? memory.detected : detectRepoStyle(memory.root);
   ui.print(c.bold('Detected from this repo') + c.gray('  (re-checked every session, not stored)'));
   ui.print(det.length ? det.map((n) => `  · ${n.text}`).join('\n') : c.gray('  (nothing detected)'));
@@ -75,8 +79,10 @@ export async function memoryCommand({ ui, root, args, yes }) {
     case 'prefs': return showPrefs(ui, memory, cfg);
     case 'path': ui.print(profilePath()); ui.print(projectMemoryPath(root)); return;
     case 'remember': {
-      if (!rest) return ui.error('Usage: ember memory remember [--project] <note>');
-      const r = memory.remember(rest, { scope: flags.has('--project') ? 'project' : 'global' });
+      if (!rest) return ui.error('Usage: ember memory remember [--project|--team] <note>');
+      let r;
+      try { r = memory.remember(rest, { scope: flags.has('--team') ? 'team' : flags.has('--project') ? 'project' : 'global' }); }
+      catch (e) { return ui.warn(e.message); }
       ui.ok(`Remembered: ${rest}${r.replaced?.length ? c.gray(` (replaces: ${r.replaced.map((x) => x.text).join('; ')})`) : ''}`);
       return;
     }

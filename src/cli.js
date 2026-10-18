@@ -30,6 +30,7 @@ Usage
   ember "add a dark mode"   do one task and exit
   ember setup [--model m]   install/start Ollama and download a coding model
   ember doctor              check Ollama, the model and your config
+  ember pro [status|activate <key>|deactivate]   Ember Pro (cloud models, team memory, premium plugins)
   ember serve               JSON-RPC over stdio for editors (used by the VS Code extension)
   ember voice [--file talk.wav] [--no-speak]   talk to Ember (local speech-to-text, optional speech)
   ember preview [/path] [question]   start the dev server, screenshot it, describe it (vision)
@@ -91,6 +92,7 @@ export async function main(argv) {
     if (cmd === 'memory') { await memoryCommand({ ui, root, args: rest, yes: opts.yes }); return 0; }
     if (cmd === 'help') { console.log(USAGE); return 0; }
     if (cmd === 'index') return await indexCommand({ ui, root, args: rest, cfg: loadConfig() });
+    if (cmd === 'pro') { const { proCommand } = await import('./pro.js'); return await proCommand({ ui, args: rest, cfg: loadConfig() }); }
     if (cmd === 'serve') {
       // Editors talk JSON-RPC on stdin/stdout, so nothing else may print to stdout.
       const { runServe } = await import('./serve.js');
