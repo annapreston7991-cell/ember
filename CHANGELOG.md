@@ -10,7 +10,7 @@
 - Models stay loaded (`keep_alive`) and Ember warms the model up at startup.
 - Prompts are trimmed and kept cache-stable, so first-call prompt tokens for `explain` dropped by 32%.
 - A fast/smart model router sends small jobs (commit messages, explanations) to a fast model when you have one. On CPU, `explain` went from 17.7 s to 2.0 s.
-- Big jobs run as focused steps. GPU detection is better. Run `npm run bench` to measure on your machine.
+- Big jobs run as focused steps. GPU detection is better. Measure it on your machine with `node scripts/bench.mjs`.
 
 ### Project index
 - A local map of your project's files and symbols, with optional `nomic-embed-text` embeddings.
