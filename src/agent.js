@@ -12,9 +12,10 @@ import { parseModelRef } from './cloud.js';
 import { Checkpoints } from './git.js';
 import { detectChecks, failed } from './checks.js';
 import { webTools } from './web.js';
-import { classifyTask, parseSteps, PLAN_PROMPT } from './router.js';
+import { classifyTask, parseSteps, parseTasks, PLAN_PROMPT } from './router.js';
 import { updateIndex, retrieve, formatHits, loadIndex, indexDir, makeEmbedder } from './indexer.js';
 import { OllamaClient } from './ollama.js';
+import { runTeam, planWaves, helperUI } from './team.js';
 import { formatPlan } from './tools.js';
 import { parseToolCalls, findJsonObjects } from './parser.js';
 import { systemPrompt, DISTILL_PROMPT, CONSOLIDATE_PROMPT, COMMIT_PROMPT } from './prompt.js';
@@ -341,14 +342,26 @@ export class Agent {
     finally { this.mode = prev.mode; this.client = prev.client; this.modelName = prev.model; this.native = prev.native; }
   }
 
-  /** Ask the planner for small focused steps. Returns [] when the job is small. */
-  async planSteps(text, { signal } = {}) {
+  /** Ask the planner for small focused tasks ([{ task, files }]). Returns [] when the job is small. */
+  async planTasks(text, { signal } = {}) {
     const m = this.modelFor('plan');
     try {
-      const r = await m.client.chat({ model: m.model, messages: [{ role: 'system', content: PLAN_PROMPT }, { role: 'user', content: text }], options: { temperature: 0, num_ctx: this.cfg.numCtx, num_predict: 300 }, signal });
-      const steps = parseSteps(r.content, this.cfg.steps?.maxSteps ?? 6);
-      return steps.length >= 2 ? steps : [];
+      const r = await m.client.chat({ model: m.model, messages: [{ role: 'system', content: PLAN_PROMPT }, { role: 'user', content: text }], options: { temperature: 0, num_ctx: this.cfg.numCtx, num_predict: 700 }, signal });
+      const tasks = parseTasks(r.content, this.cfg.steps?.maxSteps ?? 6);
+      return tasks.length >= 2 ? tasks : [];
     } catch { return []; }
+  }
+
+  async planSteps(text, opts) { return (await this.planTasks(text, opts)).map((t) => t.task); }
+
+  /** A helper agent for parallel work: same model, tools, approvals and undo history; its own conversation. */
+  spawnHelper(role) {
+    const ui = helperUI(this.ui, role);
+    const h = new Agent({ cfg: this.cfg, root: this.root, ui, client: this.client, memory: this.memory, extraTools: this.extraTools });
+    Object.assign(h, { modelName: this.modelName, native: this.native, fast: this.fast, cloud: this.cloud, emberMd: this.emberMd, index: this.index, _embedder: this._embedder });
+    h.checkpoints = { enabled: false, list: [] };
+    h.ctx = { ...this.ctx, ui, owner: role, plan: [] };
+    return h;
   }
 
   /** Run a big job as small focused steps with short contexts. */
@@ -357,12 +370,16 @@ export class Agent {
     this.ui.print(formatPlan(this.ctx.plan));
     const done = [];
     let last = '';
+    const plan = this.ctx.plan;
+    const mark = (i, st) => { if (plan[i]) plan[i].status = st; };
     for (let i = 0; i < steps.length; i++) {
-      this.ctx.plan[i].status = 'in_progress';
+      this.ctx.plan = plan; // the model may have replaced the plan with update_plan; keep the step list
+      mark(i, 'in_progress');
       this.messages = []; // focused: each step starts from a short context
       const prompt = `Overall goal: ${text}\n${done.length ? `Already done:\n${done.map((d) => `- ${d}`).join('\n')}\n` : ''}Now do ONLY this step (${i + 1}/${steps.length}): ${steps[i]}\nWhen this step is done, reply with one short sentence.`;
       last = await this.run(prompt, { signal });
-      this.ctx.plan[i].status = 'done';
+      this.ctx.plan = plan;
+      mark(i, 'done');
       done.push(`${steps[i]}${last ? ` (${last.slice(0, 120)})` : ''}`);
       this.ui.print(c.gray(`  ✔ step ${i + 1}/${steps.length}`));
     }
@@ -384,10 +401,12 @@ export class Agent {
     }
     const before = this.ctx.backups.length;
     let text;
-    const steps = this.cfg.steps?.enabled !== false && classifyTask(userText) === 'big' ? await this.planSteps(userText, { signal }) : [];
-    if (steps.length) text = await this.runSteps(userText, steps, { signal });
+    const tasks = this.cfg.steps?.enabled !== false && classifyTask(userText) === 'big' ? await this.planTasks(userText, { signal }) : [];
+    const team = this.cfg.team?.enabled !== false && tasks.length >= 2 && planWaves(tasks, this.cfg.team?.maxParallel ?? 2).some((w) => w.length > 1);
+    if (team) text = await runTeam(this, userText, tasks, { signal, selfFix });
+    else if (tasks.length) text = await this.runSteps(userText, tasks.map((t) => t.task), { signal });
     else text = await this.run(userText, { signal });
-    if (selfFix && this.ctx.backups.length > before) await this.selfFix({ signal });
+    if (!team && selfFix && this.ctx.backups.length > before) await this.selfFix({ signal });
     if (this.index && this.ctx.backups.length > before) {
       try { await updateIndex(this.root, this._embedder ? { embed: this._embedder.embed, embedModel: this._embedder.model } : {}); this.index = loadIndex(this.root); } catch { /* keep old index */ }
     }

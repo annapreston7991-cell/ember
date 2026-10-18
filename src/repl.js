@@ -20,6 +20,7 @@ ${c.bold('Commands')}
   /model [name]      show or switch the model (pulls it if needed; cloud:grok-4 for xAI)
   /models            list models installed in Ollama
   /plan              show the current plan
+  /agents [on|off]   show parallel helpers (planner, coders, tester, reviewer) or turn them on/off
   /undo              revert the last file change
   /rollback          undo everything Ember changed this session (git checkpoint)
   /commit            commit all changes with an AI-written message (you approve it)
@@ -167,6 +168,12 @@ export async function runRepl({ agent, ui, cfg, client }) {
         case '/exit': case '/quit': case '/q': await finish(); return;
         case '/clear': agent.clear(); ui.ok('Conversation cleared.'); continue;
         case '/plan': ui.print(formatPlan(agent.ctx.plan)); continue;
+        case '/agents': {
+          const { formatTeam } = await import('./team.js');
+          if (rest === 'on' || rest === 'off') { cfg.team = { ...(cfg.team || {}), enabled: rest === 'on' }; ui.ok(`Parallel helpers ${rest} for this session`); }
+          ui.print(formatTeam(agent.team, { enabled: cfg.team?.enabled !== false, maxParallel: cfg.team?.maxParallel ?? 2 }));
+          continue;
+        }
         case '/undo': {
           const r = undoLast(agent.ctx);
           if (!r) ui.print('Nothing to undo.');

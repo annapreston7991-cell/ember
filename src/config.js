@@ -27,7 +27,7 @@ export const DEFAULTS = {
   numCtx: 8192,
   keepAlive: '30m',      // how long Ollama keeps models loaded between requests
   fastModel: null,       // small model for quick jobs (commit messages, explain, memory); set by setup
-  router: { explain: 'fast', commit: 'fast', memory: 'fast', plan: 'main' },
+  router: { explain: 'fast', commit: 'fast', memory: 'fast', plan: 'main', review: 'main' },
   steps: { enabled: true, maxSteps: 6 }, // split big jobs into small focused steps
   temperature: 0.2,
   maxSteps: 25,
@@ -49,6 +49,7 @@ export const DEFAULTS = {
   cloud: { defaultProvider: 'grok' },      // used by "cloud:<model>"
   providers: {},                           // extra OpenAI-compatible endpoints
   plugins: { enabled: true },
+  team: { enabled: true, maxParallel: 2, review: true },
   index: { enabled: true, embeddings: true, embedModel: 'nomic-embed-text', autoMaxFiles: 3000, hints: 6 },
   watch: { debounceMs: 600, intervalMs: 1000 },
   pro: { enabled: false }                  // hook for a future Pro tier; nothing is gated today

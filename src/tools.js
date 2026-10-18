@@ -140,9 +140,24 @@ function backup(ctx, abs, before) {
   ctx.backups.push({ abs, before, file });
 }
 
+/** Run fn while holding the shared approval lock (parallel helpers never interleave prompts). */
+const serial = (ctx, fn) => (ctx.uiLock ? ctx.uiLock.run(fn) : fn());
+
 async function applyChange(ctx, abs, before, after, label) {
   const r = rel(ctx, abs);
   if (before === after) return `No changes needed in ${r}.`;
+  if (ctx.locks) {
+    const holder = ctx.locks.holder(abs);
+    if (holder && holder !== ctx.owner) return `${r} is being changed by the ${holder} helper right now. Do not edit it; work on your own files and mention what ${r} still needs in your summary.`;
+    ctx.locks.acquire(abs, ctx.owner);
+  }
+  return serial(ctx, () => applyChangeNow(ctx, abs, before, after, label, r));
+}
+
+async function applyChangeNow(ctx, abs, before, after, label, r) {
+  // Another helper may have written this file while we waited for the approval lock.
+  const current = fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : null;
+  if (ctx.locks && current !== before) return `${r} changed while you were working (another helper or the user edited it). Read it again and redo your change.`;
   ctx.ui.print('');
   ctx.ui.print(c.bold(`${label} ${r}`));
   ctx.ui.print(renderDiff(r, before, after));
@@ -178,7 +193,11 @@ export async function editFile(ctx, { path: p, search: s, replace, replace_all }
   return applyChange(ctx, abs, before, after, 'Edit');
 }
 
-export async function runCommand(ctx, { command, timeout_sec = 120 }) {
+export async function runCommand(ctx, args) {
+  return serial(ctx, () => runCommandNow(ctx, args || {}));
+}
+
+async function runCommandNow(ctx, { command, timeout_sec = 120 }) {
   if (typeof command !== 'string' || !command.trim()) throw new Error('command is required');
   const cmd = command.trim();
   const allowed = isAllowlisted(cmd, ctx.cfg.allowlist);

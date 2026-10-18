@@ -22,6 +22,7 @@ Ember plans, reads and writes files, runs commands, and builds projects right in
 - **Explains code:** `ember explain server.js` gives a plain-language, read-only explanation.
 - **Understands screenshots:** `/image shot.png`, or any image path in your message, is read by a local vision model.
 - **Watch mode:** `ember watch` re-runs your checks on every save and offers to fix failures.
+- **Parallel helpers:** big jobs are split into tasks. Coder helpers work on different files at the same time, then a tester runs your checks while a reviewer reads the diff. Use `/agents` to watch them.
 - **Knows your project:** a local index of files and symbols (plus optional meaning-based search with `nomic-embed-text`) points the model at the right files (see [Project index](#project-index)).
 - **Plugins:** add your own tools with a small JS file.
 - **Optional extras:** web lookup and cloud models (xAI Grok or any OpenAI-compatible API). Both are off by default.
@@ -108,6 +109,7 @@ ember "the layout breaks like this: ./screenshots/bug.png"
 | `/model [name]` | show or switch the model (offers to pull it). `/model cloud:grok-4` switches to xAI |
 | `/models` | list installed models |
 | `/plan` | show the current plan |
+| `/agents [on\|off]` | show the parallel helpers (planner, coders, tester, reviewer), or turn them on/off |
 | `/undo` | revert the last file change |
 | `/rollback` | undo everything Ember changed this session (restores the git checkpoint) |
 | `/commit` | commit all changes with an AI-written message (you approve or edit it) |
@@ -198,6 +200,24 @@ ember index --clear                 # delete the index
 Turn the index off with `"index": { "enabled": false }`. Turn just the embeddings off with `"embeddings": false`.
 
 Measured on Ember's own repo (44 files) with 12 "where is X?" questions, each with one correct file. Keywords and symbols alone put the right file first 10 times out of 12. With embeddings it was first 11 times out of 12. Both put it in the top 3 every time. A query takes about 4 ms with keywords and about 40 ms with embeddings on CPU. Building the embeddings the first time took 46 s on this CPU-only box, and later updates only cost a second or two.
+
+## Parallel helpers
+
+When a request has several parts ("create add.js…, create sub.js…, and div.js…"), Ember works as a small team:
+
+1. **Planner:** splits the job into tasks and lists the files each task touches. Neighbouring tasks on the same files are merged.
+2. **Coders:** tasks on *different* files run at the same time, up to `team.maxParallel` (2 by default). A task with no file list runs on its own.
+3. **Tester and reviewer:** after the coders finish, they run side by side. The tester runs your checks and fixes failures (the self-fix loop). The reviewer reads the diff and lists possible bugs. Its notes are shown to you but never applied automatically.
+
+Safety stays the same:
+
+- **File locks:** a file belongs to the helper that changed it first until that helper is done. Other helpers are told to leave it alone. If a file changed while a helper waited, that helper has to read it again.
+- **One prompt at a time:** every diff, approval and command goes through a single queue. Prompts never overlap, and `--yes`, the allowlist and the destructive-command check work exactly as usual.
+- **Shared undo:** `/undo` and `/rollback` cover everything the helpers changed.
+
+`/agents` shows each helper's task, files, model, time and result. `/agents off` turns helpers off (big jobs then run as sequential steps). In config, use `"team": { "enabled": true, "maxParallel": 2, "review": true }`.
+
+Ollama runs requests from several helpers at the same time if the machine has room (see `OLLAMA_NUM_PARALLEL`). On a GPU this cuts wall time. On a CPU-only machine the helpers share the same cores, so expect better focus per task rather than more speed. On the 8-core CPU test box, a 4-file job with 7B took 47 s and 53 s with helpers, against 23 s and 55 s as sequential steps. The 23 s sequential run was quick because the model skipped three of the four files. Both helper runs wrote all four files.
 
 ## Git: checkpoints, rollback, commits
 
@@ -320,8 +340,9 @@ Measured on a CPU-only test box (8 threads, 16 GB RAM, no GPU, `qwen2.5-coder:7b
   "numCtx": 8192,
   "keepAlive": "30m",
   "fastModel": "qwen2.5-coder:1.5b",
-  "router": { "explain": "fast", "commit": "fast", "memory": "fast", "plan": "main" },
+  "router": { "explain": "fast", "commit": "fast", "memory": "fast", "plan": "main", "review": "main" },
   "steps": { "enabled": true, "maxSteps": 6 },
+  "team": { "enabled": true, "maxParallel": 2, "review": true },
   "temperature": 0.2,
   "maxSteps": 25,
   "allowlist": ["ls", "cat", "git status", "git diff", "rg", "..."],
