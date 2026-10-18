@@ -4,7 +4,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { OllamaClient, ollamaBinary, ensureServer } from './ollama.js';
-import { detectHardware, pickModel } from './hardware.js';
+import { detectHardware, pickModel, pickFastModel, pickNumCtx } from './hardware.js';
 import { loadConfig, saveConfig, configPath } from './config.js';
 import { c } from './ui.js';
 
@@ -78,7 +78,7 @@ export async function runSetup({ ui, model: forcedModel, yes, vision, askVision 
 
   // 3. Hardware + model choice
   const hw = detectHardware();
-  ui.ok(`Hardware: ${hw.ramGB} GB RAM${hw.gpu ? `, ${hw.gpu}${hw.vramGB ? ` (${hw.vramGB} GB VRAM)` : ''}` : ', no dedicated GPU detected'}`);
+  ui.ok(`Hardware: ${hw.ramGB} GB RAM, ${hw.cpus} CPU threads${hw.gpu ? `, ${hw.gpu}${hw.vramGB ? ` (${hw.vramGB} GB ${hw.appleSilicon ? 'usable by the GPU' : 'VRAM'})` : ''}` : ', no dedicated GPU detected (CPU mode)'}`);
   const recommended = pickModel(hw);
   const model = forcedModel || recommended;
   ui.ok(`Model: ${c.bold(model)}${forcedModel ? c.gray(` (you chose it; recommended for this machine: ${recommended})`) : c.gray(' (picked for this machine; override with --model)')}`);
@@ -90,6 +90,17 @@ export async function runSetup({ ui, model: forcedModel, yes, vision, askVision 
     try { await pullWithProgress(client, model, ui); }
     catch (e) { ui.error(`Download failed: ${e.message}`); return false; }
     ui.ok(`${model} downloaded`);
+  }
+
+  // 4b. Fast helper model for quick jobs (commit messages, explain, memory)
+  const fastModel = cfg.fastModel === false ? null : (cfg.fastModel || pickFastModel(model, hw));
+  if (fastModel) {
+    if (await client.hasModel(fastModel)) ui.ok(`Fast helper model ${fastModel} is ready`);
+    else {
+      ui.info(`Downloading the small helper model ${fastModel} (~1 GB) for quick jobs…`);
+      try { await pullWithProgress(client, fastModel, ui); ui.ok(`${fastModel} downloaded`); }
+      catch (e) { ui.warn(`Helper model download failed (${e.message}); Ember will use ${model} for everything.`); }
+    }
   }
 
   // 5. Optional vision model for screenshots (/image)
@@ -106,6 +117,8 @@ export async function runSetup({ ui, model: forcedModel, yes, vision, askVision 
   // 6. Config
   cfg.model = model;
   cfg.lastLocalModel = model;
+  if (fastModel && (await client.hasModel(fastModel))) cfg.fastModel = fastModel;
+  if (!cfg._numCtxSetByUser) cfg.numCtx = pickNumCtx(hw);
   saveConfig(cfg);
   ui.ok(`Saved settings to ${configPath()}`);
   const tools = await client.supportsTools(model);

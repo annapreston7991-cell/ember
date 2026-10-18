@@ -25,6 +25,10 @@ export const DEFAULTS = {
   model: 'qwen2.5-coder:7b',
   host: 'http://127.0.0.1:11434',
   numCtx: 8192,
+  keepAlive: '30m',      // how long Ollama keeps models loaded between requests
+  fastModel: null,       // small model for quick jobs (commit messages, explain, memory); set by setup
+  router: { explain: 'fast', commit: 'fast', memory: 'fast', plan: 'main' },
+  steps: { enabled: true, maxSteps: 6 }, // split big jobs into small focused steps
   temperature: 0.2,
   maxSteps: 25,
   allowlist: DEFAULT_ALLOWLIST,

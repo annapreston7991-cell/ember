@@ -74,6 +74,17 @@ export class UI {
     return (ans || '').trim() === 'yes';
   }
 
+  /** Show a small "thinking" spinner until the first token arrives (TTY only). Returns stop(). */
+  thinking() {
+    if (!this.output.isTTY || this.yes === 'quiet') return () => {};
+    const frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let i = 0, stopped = false;
+    const t0 = Date.now();
+    const draw = () => this.output.write(`\r${c.gray(`${frames[i++ % frames.length]} thinking… ${((Date.now() - t0) / 1000).toFixed(0)}s`)}`);
+    const timer = setInterval(draw, 120);
+    return () => { if (stopped) return; stopped = true; clearInterval(timer); if (i) this.output.write('\r\x1b[2K'); };
+  }
+
   print(s = '') { this.output.write(s + '\n'); }
   write(s) { this.output.write(s); }
   info(s) { this.print(c.cyan('› ') + s); }

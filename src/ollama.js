@@ -21,9 +21,22 @@ async function readNdjson(res, onObj) {
 }
 
 export class OllamaClient {
-  constructor(host = 'http://127.0.0.1:11434') {
+  constructor(host = 'http://127.0.0.1:11434', { keepAlive = '30m' } = {}) {
     this.host = host.replace(/\/+$/, '');
+    this.keepAlive = keepAlive; // keep the model loaded between turns (Ollama's default is 5m)
     this._caps = new Map();
+  }
+
+  /** Load a model into memory ahead of time so the first answer doesn't pay the load cost. */
+  async warmup(model) {
+    try {
+      const r = await fetch(`${this.host}/api/generate`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model, keep_alive: this.keepAlive })
+      });
+      await r.text();
+      return r.ok;
+    } catch { return false; }
   }
 
   async version() {
@@ -81,7 +94,7 @@ export class OllamaClient {
    * onToken(text) is called for each content delta.
    */
   async chat({ model, messages, tools, options, onToken = () => {}, signal }) {
-    const body = { model, messages, stream: true, options };
+    const body = { model, messages, stream: true, options, keep_alive: this.keepAlive };
     if (tools && tools.length) body.tools = tools;
     const r = await fetch(`${this.host}/api/chat`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -96,13 +109,25 @@ export class OllamaClient {
     }
     let content = '';
     const toolCalls = [];
+    const t0 = Date.now();
+    let firstToken = null;
+    let stats = {};
     await readNdjson(r, (o) => {
       if (o.error) throw new Error(o.error);
       const m = o.message || {};
-      if (m.content) { content += m.content; onToken(m.content); }
+      if (m.content) { if (firstToken === null) firstToken = Date.now() - t0; content += m.content; onToken(m.content); }
       if (Array.isArray(m.tool_calls)) toolCalls.push(...m.tool_calls);
+      if (o.done) {
+        stats = {
+          promptTokens: o.prompt_eval_count || 0, outputTokens: o.eval_count || 0,
+          loadMs: Math.round((o.load_duration || 0) / 1e6), promptMs: Math.round((o.prompt_eval_duration || 0) / 1e6),
+          evalMs: Math.round((o.eval_duration || 0) / 1e6)
+        };
+      }
     });
-    return { content, tool_calls: toolCalls };
+    stats = { ...stats, model, wallMs: Date.now() - t0, firstTokenMs: firstToken ?? (Date.now() - t0) };
+    this.log?.push(stats);
+    return { content, tool_calls: toolCalls, stats };
   }
 }
 

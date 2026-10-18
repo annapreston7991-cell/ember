@@ -264,6 +264,28 @@ export default {
 
 A full example is in [`examples/plugins/todo-scan.js`](examples/plugins/todo-scan.js). Project plugins are code from the repository, so the first time Ember sees one (and every time its contents change) it **asks whether you trust it** and remembers your answer by file hash. A plugin can't reuse a built-in tool name. `/plugins` lists what is loaded. Turn plugins off with `"plugins": { "enabled": false }`.
 
+## Speed
+
+Ember is tuned for running on an ordinary laptop:
+
+- **The model stays loaded.** Every request sends `keep_alive` (default `30m`, set with `keepAlive`), and the REPL loads the model in the background while you type.
+- **Prompts stay cache-friendly.** The system prompt and tool list were cut by about a third, and they stay byte-identical across turns. History is only ever appended to, and it is trimmed rarely but deeply. Together these let Ollama reuse its prompt cache instead of re-reading everything.
+- **Quick jobs use a small model.** `ember setup` adds a small helper model (`fastModel`, e.g. `qwen2.5-coder:1.5b`) when your main model is 7B or larger. Commit messages, explain mode and memory notes go to the helper; coding stays on the main model. Change this with `"router": { "explain": "fast" | "main", "commit": ..., "memory": ... }`.
+- **Big jobs become focused steps.** Requests with four or more actions, a numbered list, or "build an app with…" are planned into 2–6 steps. Each step runs with a short, fresh context. Smaller requests run in one go, because splitting them was measured to be slower.
+- **Better hardware detection.** Ember detects NVIDIA (`nvidia-smi`), AMD (amdgpu sysfs or `rocm-smi`) and Apple Silicon unified memory. It picks the main model, the helper model and `num_ctx` (16K with 16 GB+ of VRAM, 8K otherwise) from what it finds.
+- **Measure it yourself:** `node scripts/bench.mjs qwen2.5-coder:7b --fast qwen2.5-coder:1.5b`
+
+Measured on a CPU-only test box (8 threads, 16 GB RAM, no GPU, `qwen2.5-coder:7b`, cold start). Model output length varies from run to run, so treat these as rough numbers:
+
+| Job | Before | After (main only) | After (with helper) |
+|---|---|---|---|
+| Explain a small file | 17.7 s | 15.2 s | **2.0 s** |
+| Commit message | 3.0 s | 3.3 s | 2.7 s (0.3 s once loaded) |
+| Write a file + test, run `npm test` | 36.1 s | 27.7 s | 40.9 s* |
+| Two follow-up questions | 11.3 s | 14.0 s | 13.4 s |
+
+*The coding job always uses the main model. The spread between runs (27.7 s and 40.9 s) comes from the model choosing 4 or 6 tool calls. Prompt evaluation for the first request dropped by about 32% (758 to 518 tokens for explain). Loading the 7B model takes 6–8 s, which `keep_alive` and warm-up now avoid after the first time.
+
 ## Configuration
 
 `~/.ember/config.json` is created by `ember setup`:
@@ -273,6 +295,10 @@ A full example is in [`examples/plugins/todo-scan.js`](examples/plugins/todo-sca
   "model": "qwen2.5-coder:7b",
   "host": "http://127.0.0.1:11434",
   "numCtx": 8192,
+  "keepAlive": "30m",
+  "fastModel": "qwen2.5-coder:1.5b",
+  "router": { "explain": "fast", "commit": "fast", "memory": "fast", "plan": "main" },
+  "steps": { "enabled": true, "maxSteps": 6 },
   "temperature": 0.2,
   "maxSteps": 25,
   "allowlist": ["ls", "cat", "git status", "git diff", "rg", "..."],

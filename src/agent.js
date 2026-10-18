@@ -12,6 +12,8 @@ import { parseModelRef } from './cloud.js';
 import { Checkpoints } from './git.js';
 import { detectChecks, failed } from './checks.js';
 import { webTools } from './web.js';
+import { classifyTask, parseSteps, PLAN_PROMPT } from './router.js';
+import { formatPlan } from './tools.js';
 import { parseToolCalls, findJsonObjects } from './parser.js';
 import { systemPrompt, DISTILL_PROMPT, CONSOLIDATE_PROMPT, COMMIT_PROMPT } from './prompt.js';
 import { detectStatedPreferences, makeNote, mergeNotes } from './memory.js';
@@ -31,7 +33,10 @@ class StreamFilter {
       this.stopped = true;
       return;
     }
-    const safe = this.buf.length - 12;
+    // Only hold back text when the tail could be the start of a tool-call marker.
+    const tail = this.buf.slice(-12);
+    const k = Math.max(tail.lastIndexOf('{'), tail.lastIndexOf('<'), tail.lastIndexOf('`'));
+    const safe = k === -1 ? this.buf.length : this.buf.length - (tail.length - k);
     if (safe > this.printed) { this.write(this.buf.slice(this.printed, safe)); this.printed = safe; }
   }
   end() {
@@ -52,7 +57,7 @@ export class Agent {
     this.mode = 'agent'; // 'agent' or 'explain'
     this.extraTools = extraTools; // plugins etc: { def, run(ctx,args), approval?(args) }
     this.native = null; // null = unknown, true = native tools, false = JSON fallback
-    if (client) { this.client = client; this.modelName = parseModelRef(cfg.model, cfg)?.model || cfg.model; this.cloud = !!client.isCloud; }
+    if (client) { this.client = client; this.modelName = parseModelRef(cfg.model, cfg)?.model || cfg.model; this.cloud = !!client.isCloud; this.setFast(); }
     else this.setModel(cfg.model);
     this.checkpoints = cfg.git?.checkpoints === false ? { enabled: false, list: [] } : new Checkpoints(root);
     this.ctx = {
@@ -81,12 +86,36 @@ export class Agent {
     this.cloud = r.cloud;
     this.cfg.model = ref;
     this.native = null;
+    this.setFast();
     return r;
   }
+
+  /** The small "fast" model for quick jobs (never a cloud model). */
+  setFast() {
+    const f = this.cfg.fastModel;
+    this.fast = null;
+    if (f && f !== this.cfg.model && !String(f).startsWith('cloud:')) {
+      const r = clientFor(f, this.cfg);
+      this.fast = { client: r.client, model: r.model, native: null };
+    }
+  }
+
+  /** Which { client, model } handles a kind of job: 'explain' | 'commit' | 'memory' | 'plan' | 'code'. */
+  modelFor(kind) {
+    if (this.fast && this.cfg.router?.[kind] === 'fast') return this.fast;
+    return { client: this.client, model: this.modelName, native: this.native };
+  }
+
+  clients() { return [this.client, this.fast?.client].filter(Boolean); }
 
   async init() {
     const caps = await this.client.supportsTools(this.model);
     this.native = caps === false ? false : true;
+    if (this.fast) {
+      const ok = await this.fast.client.hasModel(this.fast.model).catch(() => false);
+      if (!ok) this.fast = null;
+      else this.fast.native = (await this.fast.client.supportsTools(this.fast.model)) !== false;
+    }
     try { this.emberMd = fs.readFileSync(path.join(this.root, 'EMBER.md'), 'utf8'); } catch { this.emberMd = ''; }
     if (this.memory?.enabled) {
       try { this.memory.detected = detectRepoStyle(this.root); } catch { this.memory.detected = []; }
@@ -106,16 +135,27 @@ export class Agent {
   toolNames() { return this.toolDefs().map((t) => t.function.name); }
 
   system(query) {
+    // Keep the system prompt byte-identical across turns so Ollama can reuse its prompt cache.
+    // Memory is selected for the first request and refreshed only when memory actually changes.
+    const memVersion = this.memory ? `${this.memory.profile.notes.length}:${this.memory.project.length}:${this.memory.profile.updated}` : '';
+    if (this._memVersion !== memVersion || this._memText === undefined) {
+      this._memVersion = memVersion;
+      this._memText = this.memory?.forPrompt(query) || '';
+    }
     return systemPrompt({
       root: this.root, tools: this.toolDefs(), fallback: !this.native, explain: this.mode === 'explain',
-      emberMd: this.emberMd, memory: this.memory?.forPrompt(query)
+      emberMd: this.emberMd, memory: this._memText
     });
   }
 
   trimContext() {
+    // Rewriting history invalidates Ollama's prompt cache, so trim rarely but deeply:
+    // only once over budget, and then down to ~60% of it.
     const budget = (this.cfg.numCtx || 8192) * 3; // ~chars
     let total = this.messages.reduce((n, m) => n + (m.content?.length || 0), 0);
-    for (let i = 0; i < this.messages.length - 6 && total > budget; i++) {
+    if (total <= budget) return;
+    const target = budget * 0.6;
+    for (let i = 0; i < this.messages.length - 4 && total > target; i++) {
       const m = this.messages[i];
       if ((m.role === 'tool' || m._toolResult) && m.content.length > 200) {
         total -= m.content.length - 40;
@@ -125,14 +165,17 @@ export class Agent {
   }
 
   async chatOnce(signal, sys) {
-    const filter = new StreamFilter((s) => this.ui.write(s));
+    const stopThinking = this.ui.thinking ? this.ui.thinking() : () => {};
+    const filter = new StreamFilter((t) => { stopThinking(); this.ui.write(t); });
     const msgs = [{ role: 'system', content: sys }, ...this.messages.map(({ _toolResult, ...m }) => m)];
     const opts = { num_ctx: this.cfg.numCtx, temperature: this.cfg.temperature };
     try {
       const r = await this.client.chat({ model: this.model, messages: msgs, tools: this.native ? this.toolDefs() : undefined, options: opts, onToken: (t) => filter.push(t), signal });
+      stopThinking();
       filter.end();
       return r;
     } catch (e) {
+      stopThinking();
       if (e.noTools && this.native) {
         this.native = false;
         this.ui.print(c.gray('(model has no native tool calling; using JSON tool mode)'));
@@ -226,9 +269,42 @@ export class Agent {
 
   /** Explain mode: read-only tools, plain-language answer. */
   async explain(question, opts = {}) {
-    const prev = this.mode;
+    const prev = { mode: this.mode, client: this.client, model: this.modelName, native: this.native };
+    const m = this.modelFor('explain');
     this.mode = 'explain';
-    try { return await this.run(question, opts); } finally { this.mode = prev; }
+    this.client = m.client; this.modelName = m.model; this.native = m.native;
+    try { return await this.run(question, opts); }
+    finally { this.mode = prev.mode; this.client = prev.client; this.modelName = prev.model; this.native = prev.native; }
+  }
+
+  /** Ask the planner for small focused steps. Returns [] when the job is small. */
+  async planSteps(text, { signal } = {}) {
+    const m = this.modelFor('plan');
+    try {
+      const r = await m.client.chat({ model: m.model, messages: [{ role: 'system', content: PLAN_PROMPT }, { role: 'user', content: text }], options: { temperature: 0, num_ctx: this.cfg.numCtx, num_predict: 300 }, signal });
+      const steps = parseSteps(r.content, this.cfg.steps?.maxSteps ?? 6);
+      return steps.length >= 2 ? steps : [];
+    } catch { return []; }
+  }
+
+  /** Run a big job as small focused steps with short contexts. */
+  async runSteps(text, steps, { signal } = {}) {
+    this.ctx.plan = steps.map((step) => ({ step, status: 'pending' }));
+    this.ui.print(formatPlan(this.ctx.plan));
+    const done = [];
+    let last = '';
+    for (let i = 0; i < steps.length; i++) {
+      this.ctx.plan[i].status = 'in_progress';
+      this.messages = []; // focused: each step starts from a short context
+      const prompt = `Overall goal: ${text}\n${done.length ? `Already done:\n${done.map((d) => `- ${d}`).join('\n')}\n` : ''}Now do ONLY this step (${i + 1}/${steps.length}): ${steps[i]}\nWhen this step is done, reply with one short sentence.`;
+      last = await this.run(prompt, { signal });
+      this.ctx.plan[i].status = 'done';
+      done.push(`${steps[i]}${last ? ` (${last.slice(0, 120)})` : ''}`);
+      this.ui.print(c.gray(`  ✔ step ${i + 1}/${steps.length}`));
+    }
+    // Leave a compact history for follow-up questions.
+    this.messages = [{ role: 'user', content: text }, { role: 'assistant', content: `Done:\n${done.map((d) => `- ${d}`).join('\n')}` }];
+    return last;
   }
 
   /**
@@ -243,7 +319,10 @@ export class Agent {
       } catch (e) { this.ui.print(c.gray(`  (could not create a git checkpoint: ${e.message})`)); }
     }
     const before = this.ctx.backups.length;
-    const text = await this.run(userText, { signal });
+    let text;
+    const steps = this.cfg.steps?.enabled !== false && classifyTask(userText) === 'big' ? await this.planSteps(userText, { signal }) : [];
+    if (steps.length) text = await this.runSteps(userText, steps, { signal });
+    else text = await this.run(userText, { signal });
     if (selfFix && this.ctx.backups.length > before) await this.selfFix({ signal });
     return text;
   }
@@ -274,7 +353,8 @@ export class Agent {
 
   /** Ask the model for a commit message for a diff. */
   async commitMessage(diff, { signal } = {}) {
-    const r = await this.client.chat({ model: this.model, messages: [{ role: 'system', content: COMMIT_PROMPT }, { role: 'user', content: diff }], options: { temperature: 0.2, num_ctx: this.cfg.numCtx }, signal });
+    const m = this.modelFor('commit');
+    const r = await m.client.chat({ model: m.model, messages: [{ role: 'system', content: COMMIT_PROMPT }, { role: 'user', content: diff }], options: { temperature: 0.2, num_ctx: this.cfg.numCtx, num_predict: 120 }, signal });
     return r.content;
   }
 
@@ -313,7 +393,8 @@ export class Agent {
     ].join('\n');
     let content;
     try {
-      const r = await this.client.chat({ model: this.model, messages: [{ role: 'system', content: DISTILL_PROMPT }, { role: 'user', content: log }], options: { temperature: 0, num_ctx: this.cfg.numCtx }, signal });
+      const mm = this.modelFor('memory');
+      const r = await mm.client.chat({ model: mm.model, messages: [{ role: 'system', content: DISTILL_PROMPT }, { role: 'user', content: log }], options: { temperature: 0, num_ctx: this.cfg.numCtx }, signal });
       content = r.content;
     } catch { return []; }
     const learned = [];
@@ -343,7 +424,8 @@ export class Agent {
       if (learned.length < 4) continue;
       let content;
       try {
-        const r = await this.client.chat({ model: this.model, messages: [{ role: 'system', content: CONSOLIDATE_PROMPT }, { role: 'user', content: learned.map((n) => JSON.stringify({ text: n.text, ts: n.ts })).join('\n') }], options: { temperature: 0, num_ctx: this.cfg.numCtx }, signal });
+        const mm = this.modelFor('memory');
+        const r = await mm.client.chat({ model: mm.model, messages: [{ role: 'system', content: CONSOLIDATE_PROMPT }, { role: 'user', content: learned.map((n) => JSON.stringify({ text: n.text, ts: n.ts })).join('\n') }], options: { temperature: 0, num_ctx: this.cfg.numCtx }, signal });
         content = r.content;
       } catch { continue; }
       const o = findJsonObjects(content || '').find((x) => Array.isArray(x.value?.notes));

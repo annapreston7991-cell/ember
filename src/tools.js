@@ -19,49 +19,19 @@ const fn = (name, description, properties, required = []) => ({
   function: { name, description, parameters: { type: 'object', properties, required } }
 });
 
+// Kept deliberately short: every character here is re-read by the model on a cold start.
+const S = { type: 'string' }, I = { type: 'integer' };
 export const TOOL_DEFS = [
-  fn('list_dir', 'List files and folders in a directory of the project (recursive up to depth).', {
-    path: { type: 'string', description: 'Directory relative to the project root. Default "."' },
-    depth: { type: 'integer', description: 'Recursion depth, 1-4. Default 2' }
-  }),
-  fn('read_file', 'Read a text file from the project. Returns numbered lines.', {
-    path: { type: 'string' },
-    start_line: { type: 'integer', description: '1-based first line (optional)' },
-    end_line: { type: 'integer', description: 'Last line (optional)' }
-  }, ['path']),
-  fn('search', 'Search the project for a regex or text and return matching lines with file:line.', {
-    pattern: { type: 'string' },
-    path: { type: 'string', description: 'Subdirectory to search (optional)' },
-    glob: { type: 'string', description: 'File glob filter such as *.js (optional)' }
-  }, ['pattern']),
-  fn('write_file', 'Create a new file or fully overwrite a file with the given content.', {
-    path: { type: 'string' },
-    content: { type: 'string' }
-  }, ['path', 'content']),
-  fn('edit_file', 'Edit a file by replacing an exact snippet. "search" must match the file exactly once.', {
-    path: { type: 'string' },
-    search: { type: 'string', description: 'Exact existing text to replace' },
-    replace: { type: 'string', description: 'New text' },
-    replace_all: { type: 'boolean' }
-  }, ['path', 'search', 'replace']),
-  fn('run_command', 'Run a shell command in the project directory (build, test, install, git, etc.).', {
-    command: { type: 'string' },
-    timeout_sec: { type: 'integer', description: 'Default 120' }
-  }, ['command']),
-  fn('update_plan', 'Create or update your step-by-step plan / todo list. Use for any multi-step task.', {
-    steps: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: { step: { type: 'string' }, status: { type: 'string', enum: ['pending', 'in_progress', 'done'] } },
-        required: ['step', 'status']
-      }
-    }
+  fn('list_dir', 'List a project directory.', { path: S, depth: I }),
+  fn('read_file', 'Read a file (numbered lines).', { path: S, start_line: I, end_line: I }, ['path']),
+  fn('search', 'Regex search in the project; returns file:line matches.', { pattern: S, path: S, glob: S }, ['pattern']),
+  fn('write_file', 'Create or overwrite a file.', { path: S, content: S }, ['path', 'content']),
+  fn('edit_file', 'Replace an exact snippet in a file (must match once).', { path: S, search: S, replace: S, replace_all: { type: 'boolean' } }, ['path', 'search', 'replace']),
+  fn('run_command', 'Run a shell command in the project.', { command: S, timeout_sec: I }, ['command']),
+  fn('update_plan', 'Set the step list for multi-step work.', {
+    steps: { type: 'array', items: { type: 'object', properties: { step: S, status: { type: 'string', enum: ['pending', 'in_progress', 'done'] } }, required: ['step', 'status'] } }
   }, ['steps']),
-  fn('remember', 'Save a short durable note about the user\'s preferences or this project so you do better next time. Only for lasting facts the user stated or clearly showed.', {
-    note: { type: 'string' },
-    scope: { type: 'string', enum: ['global', 'project'] }
-  }, ['note'])
+  fn('remember', 'Save a lasting user/project preference.', { note: S, scope: { type: 'string', enum: ['global', 'project'] } }, ['note'])
 ];
 
 export const TOOL_NAMES = TOOL_DEFS.map((t) => t.function.name);

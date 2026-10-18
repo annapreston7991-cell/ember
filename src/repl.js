@@ -120,6 +120,8 @@ export async function runOneShot({ agent, ui, prompt }) {
 
 export async function runRepl({ agent, ui, cfg, client }) {
   ui.print(banner(cfg.model));
+  // Load the model(s) now, while the user is typing, so the first answer starts sooner.
+  for (const cl of agent.clients()) if (cl.warmup) cl.warmup(cl === agent.client ? agent.model : agent.fast?.model);
   if (agent.emberMd) ui.print(c.gray('  loaded EMBER.md project instructions'));
   if (agent.cloud) ui.print(c.yellow(`  using a cloud model: prompts and code you share go to ${agent.client.label}`));
   const plugins = agent.extraTools.filter((t) => t.plugin);

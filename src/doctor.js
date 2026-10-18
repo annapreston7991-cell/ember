@@ -39,6 +39,8 @@ export async function runDoctor({ ui, root }) {
     } catch (e) { bad(`Could not list models: ${e.message}`); }
   }
 
+  if (cfg.fastModel && v) { try { ui.print(((await client.hasModel(cfg.fastModel)) ? c.green('✓ ') + `Fast helper model ${cfg.fastModel} (commit messages, explain, memory)` : c.yellow('! ') + `Fast helper model ${cfg.fastModel} missing (ollama pull ${cfg.fastModel})`)); } catch { /* ignore */ } }
+  ui.print(c.green('✓ ') + `keep_alive ${cfg.keepAlive} · num_ctx ${cfg.numCtx}`);
   const vm = cfg.visionModel || 'qwen2.5vl:3b';
   if (v) { try { ui.print(((await client.hasModel(vm)) ? c.green('✓ ') + `Vision model ${vm} installed` : c.gray('· ') + `Vision model ${vm} not installed (optional: ember setup --vision)`)); } catch { /* ignore */ } }
   ui.print(c.green('✓ ') + `Self-fix loop: ${cfg.selfFix?.enabled !== false ? `on (up to ${cfg.selfFix?.maxAttempts ?? 3} attempts)` : 'off'} · git checkpoints: ${cfg.git?.checkpoints !== false ? 'on' : 'off'} · web lookup: ${cfg.web?.enabled ? 'on' : 'off'}`);
