@@ -158,10 +158,16 @@ async function applyChangeNow(ctx, abs, before, after, label, r) {
   // Another helper may have written this file while we waited for the approval lock.
   const current = fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : null;
   if (ctx.locks && current !== before) return `${r} changed while you were working (another helper or the user edited it). Read it again and redo your change.`;
-  ctx.ui.print('');
-  ctx.ui.print(c.bold(`${label} ${r}`));
-  ctx.ui.print(renderDiff(r, before, after));
-  let ok = ctx.always.writes ? 'y' : await ctx.ui.confirm(`Apply this change to ${r}?`);
+  let ok;
+  if (ctx.ui.reviewChange && !ctx.always.writes) {
+    // Editors (ember serve) show their own diff view and answer y / n / a.
+    ok = await ctx.ui.reviewChange({ path: r, abs, before, after, label, stats: diffStats(before, after) });
+  } else {
+    ctx.ui.print('');
+    ctx.ui.print(c.bold(`${label} ${r}`));
+    ctx.ui.print(renderDiff(r, before, after));
+    ok = ctx.always.writes ? 'y' : await ctx.ui.confirm(`Apply this change to ${r}?`);
+  }
   if (ok === 'a') { ctx.always.writes = true; ok = 'y'; }
   if (ok !== 'y') {
     ctx.session.events.push({ type: 'rejected', tool: 'file', detail: `${label} ${r}` });

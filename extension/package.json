@@ -1,0 +1,54 @@
+{
+  "name": "ember-llyverse",
+  "displayName": "Ember — local AI coding agent",
+  "description": "Chat with Ember, a local AI coding agent running on Ollama. Review and apply its diffs, explain selections. Part of the LLYVerse.",
+  "version": "0.2.0",
+  "publisher": "llyverse",
+  "license": "SEE LICENSE IN LICENSE",
+  "icon": "media/icon.png",
+  "repository": { "type": "git", "url": "https://github.com/annapreston7991-cell/ember" },
+  "homepage": "https://llyverse.org",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Machine Learning", "Programming Languages", "Other"],
+  "keywords": ["ai", "agent", "ollama", "local", "llm", "coding assistant", "llyverse"],
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [{ "id": "ember", "title": "Ember", "icon": "media/flame.svg" }]
+    },
+    "views": {
+      "ember": [{ "type": "webview", "id": "ember.chat", "name": "Chat" }]
+    },
+    "commands": [
+      { "command": "ember.explainSelection", "title": "Ember: Explain Selection", "category": "Ember" },
+      { "command": "ember.editSelection", "title": "Ember: Edit Selection…", "category": "Ember" },
+      { "command": "ember.ask", "title": "Ember: Ask…", "category": "Ember" },
+      { "command": "ember.newChat", "title": "Ember: New Chat", "category": "Ember" },
+      { "command": "ember.stop", "title": "Ember: Stop", "category": "Ember" },
+      { "command": "ember.undo", "title": "Ember: Undo Last Change", "category": "Ember" },
+      { "command": "ember.restart", "title": "Ember: Restart Server", "category": "Ember" }
+    ],
+    "menus": {
+      "editor/context": [
+        { "command": "ember.explainSelection", "when": "editorHasSelection", "group": "ember@1" },
+        { "command": "ember.editSelection", "when": "editorHasSelection", "group": "ember@2" }
+      ]
+    },
+    "keybindings": [
+      { "command": "ember.explainSelection", "key": "ctrl+alt+e", "mac": "cmd+alt+e", "when": "editorHasSelection" },
+      { "command": "ember.ask", "key": "ctrl+alt+k", "mac": "cmd+alt+k" }
+    ],
+    "configuration": {
+      "title": "Ember",
+      "properties": {
+        "ember.path": { "type": "string", "default": "ember", "description": "Path to the ember CLI (install: see the Ember README)." },
+        "ember.model": { "type": "string", "default": "", "description": "Model override (e.g. qwen2.5-coder:7b). Empty = your ~/.ember config." },
+        "ember.autoApprove": { "type": "boolean", "default": false, "description": "Apply changes and run commands without asking (like --yes). Destructive commands always ask." }
+      }
+    }
+  },
+  "scripts": {
+    "package": "npx --yes @vscode/vsce@3 package --no-dependencies --allow-missing-repository -o ember-llyverse.vsix"
+  }
+}

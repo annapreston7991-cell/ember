@@ -23,6 +23,7 @@ Ember plans, reads and writes files, runs commands, and builds projects right in
 - **Understands screenshots:** `/image shot.png`, or any image path in your message, is read by a local vision model.
 - **Live preview:** `/preview` starts your dev server, takes a headless screenshot, and lets the vision model look at it. Browser errors are collected too.
 - **Voice mode:** `ember voice` or `/voice`. You talk, local speech-to-text (faster-whisper or whisper.cpp) types it, and the answer can be read aloud (piper, `say` or espeak).
+- **VS Code extension:** a chat panel, diffs you review in VS Code's diff editor, plus Explain Selection and Edit Selection. It talks to `ember serve` over stdio.
 - **Watch mode:** `ember watch` re-runs your checks on every save and offers to fix failures.
 - **Parallel helpers:** big jobs are split into tasks. Coder helpers work on different files at the same time, then a tester runs your checks while a reviewer reads the diff. Use `/agents` to watch them.
 - **Knows your project:** a local index of files and symbols (plus optional meaning-based search with `nomic-embed-text`) points the model at the right files (see [Project index](#project-index)).
@@ -284,6 +285,35 @@ In the chat, `/voice` takes one spoken request. Everything runs on your machine:
 - **Graceful fallback:** with no microphone, no speech engine, or the install declined, Ember says so and you keep typing. With no TTS engine, answers just stay on screen.
 
 Measured on the CPU-only test box with a synthetic espeak voice: `small.en` transcribed "Please create a readme file that says hello world" correctly in 3.6 s. `base.en` took 1.1 s but misheard it. Real voices are usually easier than espeak. `ember doctor` shows which microphone, speech-to-text and speech engines it found.
+
+## Editor extension (VS Code)
+
+The extension lives in [`extension/`](extension/). Download `ember-llyverse.vsix` from the [latest release](https://github.com/annapreston7991-cell/ember/releases/latest), then:
+
+```bash
+code --install-extension ember-llyverse.vsix      # or: Extensions view › … › Install from VSIX
+```
+
+It also works in VS Code-compatible editors that install `.vsix` files (VSCodium, Cursor and others). Open the 🔥 **Ember** view in the activity bar:
+
+- **Chat** with the agent. Its text streams in, and its tool steps show up as they happen.
+- **Review diffs:** each file change opens in VS Code's diff editor, with **Apply**, **Apply All** or **Reject**. When you reject, you can say why, and the agent gets that feedback.
+- **Explain Selection** (`Ctrl+Alt+E`, read-only) and **Edit Selection…** are in the editor's right-click menu.
+- **Commands** ask in a dialog. Destructive ones need you to type `yes`. **Stop**, **Undo** and **New chat** are in the panel.
+
+Settings: `ember.path` (if `ember` isn't on VS Code's PATH, e.g. `~/.npm-global/bin/ember`), `ember.model`, and `ember.autoApprove`.
+
+### `ember serve` (for any editor)
+
+`ember serve [-C dir]` speaks JSON-RPC 2.0 over stdin/stdout, one JSON message per line. Nothing else is written to stdout.
+
+- Requests: `initialize`, `chat {text, mode}`, `explain {file, selection, language, startLine}`, `cancel`, `undo`, `reset`, `status`, `shutdown`.
+- Notifications: `stream`, `output`, `plan`, `busy`.
+- Ember asks the editor through the requests `approval {kind: "change" | "confirm" | "danger", ...}` and `input {prompt}`. Change approvals include the full before and after text, so editors can show their own diff.
+
+The protocol is documented at the top of [`src/serve.js`](src/serve.js). The extension's client is [`extension/rpc.js`](extension/rpc.js), a plain Node module with no dependencies that you can reuse.
+
+Build the `.vsix` yourself with `cd extension && npm run package` (uses `@vscode/vsce`).
 
 ## Watch mode
 

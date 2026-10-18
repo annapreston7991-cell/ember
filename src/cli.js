@@ -30,6 +30,7 @@ Usage
   ember "add a dark mode"   do one task and exit
   ember setup [--model m]   install/start Ollama and download a coding model
   ember doctor              check Ollama, the model and your config
+  ember serve               JSON-RPC over stdio for editors (used by the VS Code extension)
   ember voice [--file talk.wav] [--no-speak]   talk to Ember (local speech-to-text, optional speech)
   ember preview [/path] [question]   start the dev server, screenshot it, describe it (vision)
   ember index [--embed|--clear|--query "text"]   build/update the project index (.ember/index)
@@ -90,6 +91,16 @@ export async function main(argv) {
     if (cmd === 'memory') { await memoryCommand({ ui, root, args: rest, yes: opts.yes }); return 0; }
     if (cmd === 'help') { console.log(USAGE); return 0; }
     if (cmd === 'index') return await indexCommand({ ui, root, args: rest, cfg: loadConfig() });
+    if (cmd === 'serve') {
+      // Editors talk JSON-RPC on stdin/stdout, so nothing else may print to stdout.
+      const { runServe } = await import('./serve.js');
+      const scfg = loadConfig();
+      if (opts.model) scfg.model = opts.model;
+      if (opts.host) scfg.host = opts.host;
+      if (opts.noMemory) scfg.memory = { ...scfg.memory, enabled: false };
+      if (opts.noFix) scfg.selfFix = { ...scfg.selfFix, enabled: false };
+      return await runServe({ root, yes: !!opts.yes, cfg: scfg, version: pkg.version });
+    }
 
     const cfg = loadConfig();
     if (opts.model) cfg.model = opts.model;
