@@ -22,6 +22,7 @@ Ember plans, reads and writes files, runs commands, and builds projects right in
 - **Explains code:** `ember explain server.js` gives a plain-language, read-only explanation.
 - **Understands screenshots:** `/image shot.png`, or any image path in your message, is read by a local vision model.
 - **Live preview:** `/preview` starts your dev server, takes a headless screenshot, and lets the vision model look at it. Browser errors are collected too.
+- **Voice mode:** `ember voice` or `/voice`. You talk, local speech-to-text (faster-whisper or whisper.cpp) types it, and the answer can be read aloud (piper, `say` or espeak).
 - **Watch mode:** `ember watch` re-runs your checks on every save and offers to fix failures.
 - **Parallel helpers:** big jobs are split into tasks. Coder helpers work on different files at the same time, then a tester runs your checks while a reviewer reads the diff. Use `/agents` to watch them.
 - **Knows your project:** a local index of files and symbols (plus optional meaning-based search with `nomic-embed-text`) points the model at the right files (see [Project index](#project-index)).
@@ -110,6 +111,7 @@ ember "the layout breaks like this: ./screenshots/bug.png"
 | `/model [name]` | show or switch the model (offers to pull it). `/model cloud:grok-4` switches to xAI |
 | `/models` | list installed models |
 | `/plan` | show the current plan |
+| `/voice [file.wav]` | say your next request (or transcribe a WAV file); the answer is spoken if text-to-speech is available |
 | `/preview [/path\|url] [question]` | start the dev server, screenshot the page, describe it, and collect browser errors (`/preview stop` stops the server) |
 | `/agents [on\|off]` | show the parallel helpers (planner, coders, tester, reviewer), or turn them on/off |
 | `/undo` | revert the last file change |
@@ -266,6 +268,23 @@ Use `/image path/to/shot.png fix the overlap`, or put any `.png`, `.jpg`, `.webp
 
 Set `"preview": { "command": "make serve", "port": 8080, "width": 1280, "height": 800 }` in config for anything Ember can't detect.
 
+## Voice mode
+
+```bash
+ember voice                    # press Enter, talk, press Enter; say "stop" to finish
+ember voice --file ask.wav     # transcribe a recording instead of the microphone
+ember voice --no-speak         # don't read answers aloud
+```
+
+In the chat, `/voice` takes one spoken request. Everything runs on your machine:
+
+- **Microphone:** `arecord` (Linux), `sox`/`rec`, or `ffmpeg` (PulseAudio, AVFoundation on macOS, DirectShow on Windows).
+- **Speech-to-text:** whisper.cpp, if `whisper-cli` and a `ggml-*.bin` model are on your machine (or set `voice.whisperCpp` / `voice.whisperModel`). Otherwise faster-whisper, from Ember's own venv or your Python. Otherwise the `whisper` CLI. With none of these installed, Ember **offers** to install faster-whisper into `~/.ember/tools/voice/venv` (about 150 MB, plus about 500 MB for the `small.en` model the first time). Set `"voice": { "sttModel": "base.en" }` for a faster, smaller model.
+- **Speech (optional):** piper (with a `.onnx` voice), macOS `say`, `espeak-ng`/`espeak`, or Windows SAPI. Ember reads a short summary aloud. Code blocks, links and markdown are left out and stay on screen.
+- **Graceful fallback:** with no microphone, no speech engine, or the install declined, Ember says so and you keep typing. With no TTS engine, answers just stay on screen.
+
+Measured on the CPU-only test box with a synthetic espeak voice: `small.en` transcribed "Please create a readme file that says hello world" correctly in 3.6 s. `base.en` took 1.1 s but misheard it. Real voices are usually easier than espeak. `ember doctor` shows which microphone, speech-to-text and speech engines it found.
+
 ## Watch mode
 
 `ember watch` lists the checks it will run and asks once. After that it re-runs them whenever a file changes, ignoring `node_modules`, `.git` and build folders. It uses polling, so it works on every OS and Node 18. When a check fails it shows the error and asks **"Ask Ember to fix it?"**. Fixes go through the normal diff approvals. Press Ctrl+C to stop.
@@ -357,6 +376,7 @@ Measured on a CPU-only test box (8 threads, 16 GB RAM, no GPU, `qwen2.5-coder:7b
   "router": { "explain": "fast", "commit": "fast", "memory": "fast", "plan": "main", "review": "main" },
   "steps": { "enabled": true, "maxSteps": 6 },
   "team": { "enabled": true, "maxParallel": 2, "review": true },
+  "voice": { "tts": true, "sttModel": "small.en", "maxSec": 60 },
   "temperature": 0.2,
   "maxSteps": 25,
   "allowlist": ["ls", "cat", "git status", "git diff", "rg", "..."],

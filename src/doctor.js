@@ -59,6 +59,11 @@ export async function runDoctor({ ui, root }) {
   ui.print(c.green('✓ ') + `Memory: ${mem ? 'on' : 'off'}${mem ? ` · profile ${fs.existsSync(profilePath()) ? profilePath() : '(empty)'}` : ''}`);
   if (mem && root && fs.existsSync(projectMemoryPath(root))) ui.print(c.green('✓ ') + `Project memory: ${projectMemoryPath(root)}`);
   ui.print(c.green('✓ ') + `Allowlisted commands: ${cfg.allowlist.length}`);
+  {
+    const { voiceStatus } = await import('./voice.js');
+    const vs = voiceStatus(cfg);
+    ui.print((vs.stt ? c.green('✓ ') : c.gray('· ')) + `Voice (optional): mic ${vs.rec || 'none'} · speech-to-text ${vs.stt || 'not installed (ember voice offers faster-whisper)'} · speech ${vs.tts || 'none'}`);
+  }
   if (cfg.index?.enabled !== false) {
     const ip = root && path.join(root, '.ember', 'index', 'index.json');
     let n = 0; try { n = Object.keys(JSON.parse(fs.readFileSync(ip, 'utf8')).files || {}).length; } catch { /* none yet */ }

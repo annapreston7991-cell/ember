@@ -22,6 +22,7 @@ ${c.bold('Commands')}
   /plan              show the current plan
   /preview [/path|url] [ask]  start the dev server, screenshot the page, and let the vision model look
   /preview stop      stop the dev server
+  /voice             say your next request (local speech-to-text); answers are spoken if TTS exists
   /agents [on|off]   show parallel helpers (planner, coders, tester, reviewer) or turn them on/off
   /undo              revert the last file change
   /rollback          undo everything Ember changed this session (git checkpoint)
@@ -204,6 +205,22 @@ export async function runRepl({ agent, ui, cfg, client }) {
         case '/exit': case '/quit': case '/q': await finish(); return;
         case '/clear': agent.clear(); ui.ok('Conversation cleared.'); continue;
         case '/plan': ui.print(formatPlan(agent.ctx.plan)); continue;
+        case '/voice': {
+          const { listenOnce, findTTS, speak } = await import('./voice.js');
+          controller = new AbortController();
+          try {
+            const said = await listenOnce({ ui, cfg, file: rest ? path.resolve(agent.root, rest) : null, waitForEnter: () => ui.ask('') });
+            if (said) {
+              ui.print('');
+              const out = await agent.runTask(said, { signal: controller.signal });
+              ui.print('');
+              const tts = cfg.voice?.tts !== false ? findTTS(cfg) : null;
+              if (tts && out) await speak(out, tts).catch(() => {});
+            }
+          } catch (e) { if (controller.signal.aborted) ui.warn('Stopped.'); else ui.error(e.message); }
+          finally { controller = null; }
+          continue;
+        }
         case '/preview': {
           controller = new AbortController();
           try {

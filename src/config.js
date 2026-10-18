@@ -49,6 +49,7 @@ export const DEFAULTS = {
   cloud: { defaultProvider: 'grok' },      // used by "cloud:<model>"
   providers: {},                           // extra OpenAI-compatible endpoints
   plugins: { enabled: true },
+  voice: { tts: true, sttModel: 'small.en', maxSec: 60 },
   team: { enabled: true, maxParallel: 2, review: true },
   index: { enabled: true, embeddings: true, embedModel: 'nomic-embed-text', autoMaxFiles: 3000, hints: 6 },
   watch: { debounceMs: 600, intervalMs: 1000 },

@@ -30,6 +30,7 @@ Usage
   ember "add a dark mode"   do one task and exit
   ember setup [--model m]   install/start Ollama and download a coding model
   ember doctor              check Ollama, the model and your config
+  ember voice [--file talk.wav] [--no-speak]   talk to Ember (local speech-to-text, optional speech)
   ember preview [/path] [question]   start the dev server, screenshot it, describe it (vision)
   ember index [--embed|--clear|--query "text"]   build/update the project index (.ember/index)
   ember new "<idea>"        scaffold a new working project in a new folder
@@ -64,6 +65,8 @@ export function parseArgs(argv) {
     else if (a === '--no-fix') opts.noFix = true;
     else if (a === '--vision') opts.vision = true;
     else if (a === '--dir') opts.dir = next();
+    else if (a === '--file') opts.file = next();
+    else if (a === '--no-speak') opts.noSpeak = true;
     else if (a === '-v' || a === '--version') opts.version = true;
     else if (a === '-h' || a === '--help') opts.help = true;
     else if (a === '--') { opts._.push(...argv.slice(i + 1)); break; }
@@ -155,6 +158,10 @@ export async function main(argv) {
       try { await previewFlow({ agent, ui, cfg, rest: rest.join(' ') }); }
       finally { await stopPreview(agent).catch(() => {}); }
       return 0;
+    }
+    if (cmd === 'voice') {
+      const { runVoice } = await import('./voice.js');
+      return await runVoice({ agent, ui, cfg, file: opts.file && path.resolve(opts.file), speakOut: !opts.noSpeak && cfg.voice?.tts !== false });
     }
     if (cmd === 'watch') return await runWatch({ agent, ui, cfg, root: projectRoot });
 
