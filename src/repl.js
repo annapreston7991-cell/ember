@@ -19,7 +19,10 @@ ${c.bold('Commands')}
   /help              show this help
   /model [name]      show or switch the model (pulls it if needed; cloud:grok-4 for xAI)
   /models            list models installed in Ollama
-  /plan              show the current plan
+  /plan [idea]       plan an app/website with Ember (questions → spec → task list in .ember/plan.md)
+  /build             Ember builds the approved plan on her own, task by task (resumable)
+  /pause             (while building) pause after the current task; Ctrl+C stops right away
+  /steps             show the step list of the current request
   /preview [/path|url] [ask]  start the dev server, screenshot the page, and let the vision model look
   /preview stop      stop the dev server
   /voice             say your next request (local speech-to-text); answers are spoken if TTS exists
@@ -62,6 +65,22 @@ export function previewDeps({ ui, cfg }) {
   return {
     ensureVision: () => ensureVision({ ui, cfg }),
     describe: (p, question, signal) => describeImages({ client: new OllamaClient(cfg.host), model: vmodel, paths: [p], question: `${question} (Answer in under 120 words: what is on the page, and what looks broken. Do not write code.)`, signal })
+  };
+}
+
+/** After a build: if it's a web project and memory allows, take one screenshot (no downloads asked). */
+export function buildPreview({ agent, ui, cfg }) {
+  return async () => {
+    if (cfg._lowMemory || cfg.build?.preview === false) return;
+    const { detectDevServer, previewOnce, stopPreview } = await import('./preview.js');
+    if (!detectDevServer(agent.root, cfg) && !fs.existsSync(path.join(agent.root, 'index.html'))) return;
+    const vmodel = cfg.visionModel || DEFAULT_VISION_MODEL;
+    const local = new OllamaClient(cfg.host);
+    const haveVision = await local.hasModel(vmodel).catch(() => false);
+    try {
+      const r = await previewOnce({ agent, ui, cfg, question: 'Does the page look finished and work?', ensureVision: async () => haveVision, describe: previewDeps({ ui, cfg }).describe });
+      ui.print(''); ui.print(r.report);
+    } finally { await stopPreview(agent).catch(() => {}); }
   };
 }
 
@@ -205,7 +224,18 @@ export async function runRepl({ agent, ui, cfg, client }) {
         case '/help': case '/?': ui.print(HELP); continue;
         case '/exit': case '/quit': case '/q': await finish(); return;
         case '/clear': agent.clear(); ui.ok('Conversation cleared.'); continue;
-        case '/plan': ui.print(formatPlan(agent.ctx.plan)); continue;
+        case '/steps': ui.print(formatPlan(agent.ctx.plan)); continue;
+        case '/pause': ui.print(c.gray('Nothing is building right now. /build starts or continues the plan.')); continue;
+        case '/plan': case '/build': {
+          const { planSession, buildSession } = await import('./plan.js');
+          controller = new AbortController();
+          try {
+            if (cmd === '/plan') await planSession({ agent, ui, idea: rest, signal: controller.signal });
+            else await buildSession({ agent, ui, signal: controller.signal, preview: buildPreview({ agent, ui, cfg }) });
+          } catch (e) { if (controller.signal.aborted) ui.warn('Stopped. /build continues where it left off.'); else ui.error(e.message); }
+          finally { controller = null; }
+          continue;
+        }
         case '/voice': {
           const { listenOnce, findTTS, speak } = await import('./voice.js');
           controller = new AbortController();

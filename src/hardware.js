@@ -67,7 +67,7 @@ export function pickModel({ ramGB, vramGB = 0, appleSilicon = false }) {
     if (ramGB >= 64) return tag('32b');
     if (ramGB >= 32) return tag('14b');
     if (ramGB >= 16) return tag('7b');
-    if (ramGB >= 8) return tag('3b');
+    if (ramGB >= 6) return tag('3b');
     return tag('1.5b');
   }
   if (vramGB >= 22 && ramGB >= 32) return tag('32b');
@@ -75,7 +75,7 @@ export function pickModel({ ramGB, vramGB = 0, appleSilicon = false }) {
   if (vramGB >= 6) return tag('7b');
   // CPU only (or a small GPU): bigger models get very slow.
   if (ramGB >= 12) return tag('7b');
-  if (ramGB >= 6) return tag('3b');
+  if (ramGB >= 4) return tag('3b'); // 3B writes files reliably; 1.5B often pastes code into the chat
   return tag('1.5b');
 }
 

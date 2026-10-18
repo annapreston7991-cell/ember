@@ -4,6 +4,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 
 /**
  * Resolve a user/model supplied path and make sure it stays inside root.
@@ -13,9 +14,22 @@ export function resolveInside(root, p) {
   if (typeof p !== 'string' || p.trim() === '') throw new Error('Path is required');
   if (p.includes('\0')) throw new Error('Invalid path');
   const realRoot = fs.realpathSync(root);
-  const abs = path.resolve(realRoot, p.replace(/^~(?=$|\/)/, '\0HOME'));
-  if (abs.includes('\0')) throw new Error(`Path "${p}" is outside the project (home paths are not allowed)`);
-  if (!isWithin(realRoot, abs)) throw new Error(`Path "${p}" is outside the project directory`);
+  p = p.trim().replace(/^(['"`])(.*)\1$/, '$2');
+  // "~/x" means the home folder: fine when the project is (inside) home, e.g. ember run from ~.
+  if (/^~(?=$|[\/])/.test(p)) p = path.join(os.homedir(), p.slice(1));
+  let abs = path.resolve(realRoot, p);
+  // Models often write project files as "/hello.py" or "/src/app.js". When such an absolute path
+  // is outside the project and its top folder does not exist on this machine, treat it as
+  // relative to the project instead of failing the write.
+  if (path.isAbsolute(p) && !isWithin(realRoot, abs) && !isWithin(fs.realpathSync(os.homedir()), abs)) {
+    const top = abs.split(path.sep).filter(Boolean)[0];
+    if (top && !fs.existsSync(path.join(path.parse(abs).root, top))) abs = path.resolve(realRoot, '.' + path.sep + path.relative(path.parse(abs).root, abs));
+  }
+  if (!isWithin(realRoot, abs)) {
+    let hint = '';
+    if (path.isAbsolute(p)) hint = ` Use a path relative to the project, like "${path.basename(p)}".`;
+    throw new Error(`Path "${p}" is outside the project directory (${realRoot}).${hint}`);
+  }
   // Follow symlinks for the deepest existing ancestor.
   let probe = abs;
   while (!fs.existsSync(probe) && probe !== path.dirname(probe)) probe = path.dirname(probe);

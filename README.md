@@ -72,20 +72,21 @@ If you use `nvm`, global installs already go to a folder you own; just make sure
 
 1. Looks for Ollama. If it's missing, it offers to run the official installer (`curl -fsSL https://ollama.com/install.sh | sh`) and **asks first**. On Windows it prints the download link.
 2. Makes sure the Ollama server is running and starts `ollama serve` if not.
-3. Checks your memory and GPU and picks a model:
+3. Lists the models you already have (`ollama list`). If one of them is a capable coding model, Ember offers to reuse it instead of downloading another. Otherwise it checks your memory and GPU and picks a model:
 
    | Machine | Model |
    |---|---|
-   | < 6 GB RAM | `qwen2.5-coder:1.5b` |
-   | 6–12 GB RAM, CPU only | `qwen2.5-coder:3b` |
+   | < 4 GB RAM | `qwen2.5-coder:1.5b` (works, but often pastes code instead of saving it) |
+   | 4–12 GB RAM, CPU only | `qwen2.5-coder:3b` (recommended for small laptops and Chromebooks) |
    | 12 GB+ RAM or a 6 GB+ GPU (default) | `qwen2.5-coder:7b` |
    | 10 GB+ GPU / Apple Silicon 32 GB+ | `qwen2.5-coder:14b` |
    | 22 GB+ GPU / Apple Silicon 64 GB+ | `qwen2.5-coder:32b` |
 
 4. Downloads the model with a progress bar.
-5. Optionally downloads the vision model `qwen2.5vl:3b` (~3 GB) so Ember can read screenshots. Use `ember setup --vision` to get it without the question.
-6. Optionally downloads the embedding model `nomic-embed-text` (~270 MB) so the [project index](#project-index) can search by meaning.
-7. Saves settings to `~/.ember/config.json`, readable only by you (mode 600).
+5. Offers the optional extras: the embedding model `nomic-embed-text` (~270 MB) so the [project index](#project-index) can search by meaning, and the vision model `qwen2.5vl:3b` (~3 GB) so Ember can read screenshots. On [low-memory machines](#low-memory-machines) the vision model is skipped unless you ask for it with `ember setup --vision`.
+6. Saves settings to `~/.ember/config.json`, readable only by you (mode 600).
+
+`ember setup` can be run again at any time, for example to add the extras you skipped; it keeps your current model unless you pass `--model`. After updating from an older version, Ember offers the missing extras once. `ember doctor` lists any optional model that's missing, with the exact `ollama pull` command.
 
 To choose a model yourself, run `ember setup --model qwen2.5-coder:14b`. Any Ollama model works (for example `--model llama3.1:8b`).
 
@@ -99,6 +100,9 @@ ember -y "run the tests and fix whatever fails"   # auto-approve (dangerous comm
 ember doctor                           # check Ollama, model, config
 ember index                            # build/update the project index
 ember new "a URL shortener with Express and SQLite"
+ember plan "a website for my bakery"   # questions → spec + task list in .ember/plan.md
+ember build                            # build the approved plan on its own, task by task
+ember --debug "create hello.js"        # write a debug log to ~/.ember/logs
 ember explain src/auth.js              # or: ember explain "how does login work?"
 ember watch                            # tests on every save, fixes on request
 ember "the layout breaks like this: ./screenshots/bug.png"
@@ -111,7 +115,10 @@ ember "the layout breaks like this: ./screenshots/bug.png"
 | `/help` | show commands |
 | `/model [name]` | show or switch the model (offers to pull it). `/model cloud:grok-4` switches to xAI |
 | `/models` | list installed models |
-| `/plan` | show the current plan |
+| `/plan [idea]` | plan a project: questions, then a spec and task list in `.ember/plan.md` |
+| `/build` | build the approved plan autonomously (see [Plan and build](#plan-and-build)) |
+| `/pause` | pause a build after the current task (type it while Ember works) |
+| `/steps` | show the step plan of the current request |
 | `/voice [file.wav]` | say your next request (or transcribe a WAV file); the answer is spoken if text-to-speech is available |
 | `/preview [/path\|url] [question]` | start the dev server, screenshot the page, describe it, and collect browser errors (`/preview stop` stops the server) |
 | `/agents [on\|off]` | show the parallel helpers (planner, coders, tester, reviewer), or turn them on/off |
@@ -135,6 +142,70 @@ Press **Ctrl+C** to stop a running answer, or press it twice at the prompt to qu
 ### Project instructions: `EMBER.md`
 
 If an `EMBER.md` file is in the folder where you run Ember, it is added to every prompt. Use it for project rules such as "This is an Express + EJS app. Use better-sqlite3. Run `npm test` after changes."
+
+## Plan and build
+
+For a whole project, let Ember plan first and then build on its own.
+
+**`ember plan "idea"`** (or `/plan idea`) asks a few clarifying questions about the audience, features, pages, stack and style. Press Enter to let Ember decide. It then writes a short spec and a task list to `.ember/plan.md`. You can approve it (`y`), give feedback to redo it, or open the file, edit it and press Enter. It's plain markdown:
+
+```markdown
+## Tasks
+- [x] 1. Create index.html with the menu
+- [~] 2. Create style.css          ← in progress (a build resumes here)
+- [ ] 3. Write README.md
+- [?] 4. Add online ordering — blocked: which payment provider?
+```
+
+**`ember build`** (or `/build`) then works through the tasks one at a time. For each task it writes the files, installs project dependencies, runs the tests and fixes failures (up to 2 tries), checks the task off, and makes a git checkpoint. It shows the checklist as it goes. At the end you get a summary, how to run the project, and any open questions. It can show a preview for web projects if a browser is available.
+
+While a build runs, Ember **approves on its own**:
+- writing and editing files inside the project
+- safe commands inside the project (`npm install`, `npm test`, `node app.js`, `python -m venv .venv`, `.venv/bin/pip install …`)
+
+It **still asks you** before:
+- destructive commands (`rm -rf`, `git reset --hard`, `curl … | sh`)
+- anything outside the project folder (`..`, `~`, absolute paths)
+- system or global installs (`apt`, `brew`, `sudo`, `npm install -g`, `pip install` outside a virtualenv)
+- network tools and pushes (`curl`, `wget`, `git clone`, `git push`)
+- cloud models and web lookups
+
+When the model hits a genuine question (for example "Stripe or PayPal?"), Ember asks you. If nobody is there to answer, it writes the question into the plan, marks that task `[?]`, and moves on. Type `/pause` to stop after the current task, or press **Ctrl+C** to stop right away. Progress is saved either way, and `ember build` continues where it left off. Tasks are kept small and the prompts short, so this works with `qwen2.5-coder:3b`.
+
+## Low-memory machines
+
+Ember checks how much memory it has. With 6.5 GB or less (or `"lowMemory": true` in the config) it runs in **low-memory mode**:
+- one model for everything: no separate fast model and no parallel helpers
+- no per-session embeddings, and no vision model unless you ask for it
+- models are unloaded after 10 minutes idle (`keep_alive`)
+
+**Pick the 3B model.** `qwen2.5-coder:3b` (~1.9 GB) is the smallest model that writes files reliably. With `qwen2.5-coder:1.5b`, Ember has to rescue code the model pastes into the chat ("Save this code to todo.py?"), and the filenames are sometimes wrong. A 3B model needs about 4–6 GB available to Linux.
+
+```bash
+ollama pull qwen2.5-coder:3b
+ember setup --model qwen2.5-coder:3b      # or, inside a session: /model qwen2.5-coder:3b
+```
+
+**Don't run two models at once.** `ember doctor` shows the models Ollama has loaded right now. Stop the ones you don't need with `ollama stop <name>`. If a model fails to load, Ember says so plainly (out of memory, Ollama not running or crashed) and suggests what to do. It never just prints "fetch failed". If Ollama isn't running, Ember offers to start `ollama serve`.
+
+**Chromebooks (Crostini).** Linux on ChromeOS only gets part of the laptop's memory. To give it more, open *Settings → About ChromeOS → Developers → Linux development environment* and raise the memory or disk limit if your ChromeOS version offers it, then restart Linux. On an 8 GB Chromebook, close Chrome tabs while Ember works.
+
+**Or use a cloud model.** You can let a cloud model do the heavy lifting:
+- **Ollama's cloud models** go through your local Ollama and come with free starter usage: `ollama signin`, then `ember -m gemma4:cloud` (any `<model>:cloud` name from ollama.com works).
+- **Ember Pro** includes `cloud:grok` (see [Cloud models](#cloud-models-optional)).
+
+**Small-model settings.** Models with ≤ 4B parameters get a short, strict system prompt and an example tool call. Ember also reads tool calls the model writes as text (```` ```json ```` blocks, `<tool_call>` tags, `write_file(path=…)`, and even JSON that is missing its last brace). `"toolMode": "auto" | "native" | "text"` forces native tool calling or the text protocol. `"smallModel": true|false` overrides the size detection.
+
+## Debug logs
+
+If Ember doesn't do what you expect (for example it doesn't write files), run it with `--debug` or `EMBER_DEBUG=1`:
+
+```bash
+ember --debug "create hello.js that prints hi"
+EMBER_DEBUG=1 ember
+```
+
+Ember prints the log path (`~/.ember/logs/ember-<time>.log`, readable only by you). The log has the model's raw replies, how each reply was parsed, and every approval. API keys and tokens are redacted, but your prompts and code are in it, so check it before you share it.
 
 ## Safety model
 

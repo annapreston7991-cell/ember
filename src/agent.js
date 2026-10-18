@@ -14,10 +14,13 @@ import { detectChecks, failed } from './checks.js';
 import { webTools } from './web.js';
 import { classifyTask, parseSteps, parseTasks, PLAN_PROMPT } from './router.js';
 import { updateIndex, retrieve, formatHits, loadIndex, indexDir, makeEmbedder } from './indexer.js';
-import { OllamaClient } from './ollama.js';
+import os from 'node:os';
+import { OllamaClient, oomAdvice, waitForServer, ensureServer, ollamaBinary } from './ollama.js';
 import { runTeam, planWaves, helperUI } from './team.js';
 import { formatPlan } from './tools.js';
-import { parseToolCalls, findJsonObjects } from './parser.js';
+import { parseToolCalls, findJsonObjects, parseLenient } from './parser.js';
+import { extractCodeFiles, wantsFiles, hasUnsavedCode, fileNamesIn } from './rescue.js';
+import { dlog } from './debug.js';
 import { systemPrompt, DISTILL_PROMPT, CONSOLIDATE_PROMPT, COMMIT_PROMPT } from './prompt.js';
 import { detectStatedPreferences, makeNote, mergeNotes } from './memory.js';
 import { detectRepoStyle } from './style.js';
@@ -37,15 +40,18 @@ class StreamFilter {
       return;
     }
     // Only hold back text when the tail could be the start of a tool-call marker.
-    const tail = this.buf.slice(-12);
-    const k = Math.max(tail.lastIndexOf('{'), tail.lastIndexOf('<'), tail.lastIndexOf('`'));
+    const tail = this.buf.slice(Math.max(this.printed, this.buf.length - 12));
+    const k = tail.search(/[{<`]/);
     const safe = k === -1 ? this.buf.length : this.buf.length - (tail.length - k);
     if (safe > this.printed) { this.write(this.buf.slice(this.printed, safe)); this.printed = safe; }
   }
   end() {
-    if (!this.stopped && this.printed < this.buf.length) this.write(this.buf.slice(this.printed));
+    if (this.stopped) return; // held-back text stays available through hidden()
+    if (this.printed < this.buf.length) this.write(this.buf.slice(this.printed));
     this.printed = this.buf.length;
   }
+  /** Text held back because it looked like a tool call (shown if it turns out not to be one). */
+  hidden() { return this.stopped ? this.buf.slice(this.printed) : ''; }
 }
 
 export const READ_ONLY_TOOLS = ['list_dir', 'read_file', 'search'];
@@ -111,9 +117,18 @@ export class Agent {
 
   clients() { return [this.client, this.fast?.client].filter(Boolean); }
 
+  /** Models of about 4B parameters or less get a stricter, shorter prompt and extra help with tool calls. */
+  isSmall() {
+    if (this.cfg.smallModel === true || this.cfg.smallModel === false) return this.cfg.smallModel;
+    return modelSizeB(this.model, this._paramSize) <= 4;
+  }
+
   async init() {
     const caps = await this.client.supportsTools(this.model);
-    this.native = caps === false ? false : true;
+    this._paramSize = this.client.paramSize?.(this.model) || null;
+    const mode = this.cfg.toolMode || 'auto'; // 'auto' | 'native' | 'text'
+    this.native = mode === 'text' ? false : mode === 'native' ? true : caps !== false;
+    dlog('init', { model: this.model, capsTools: caps, paramSize: this._paramSize, toolMode: mode, native: this.native, small: this.isSmall(), fast: this.fast?.model || null, root: this.root });
     if (this.fast) {
       const ok = await this.fast.client.hasModel(this.fast.model).catch(() => false);
       if (!ok) this.fast = null;
@@ -149,7 +164,8 @@ export class Agent {
       }
       // Embeddings at session start only refresh an existing vector store (built by `ember index`),
       // so a first session in a big repo never stalls on embedding everything.
-      let emb = force || fs.existsSync(path.join(indexDir(this.root), 'vectors.json')) ? this.embedder() : null;
+      // Low-memory mode skips loading a second (embedding) model at session start.
+      let emb = force || (ic.sessionEmbeddings !== false && fs.existsSync(path.join(indexDir(this.root), 'vectors.json'))) ? this.embedder() : null;
       if (emb && !(await emb.client.hasModel(emb.model, { timeoutMs: 1500 }).catch(() => false))) emb = null;
       this._embedder = emb;
       this.indexStats = await updateIndex(this.root, emb ? { embed: emb.embed, embedModel: emb.model } : {});
@@ -201,7 +217,7 @@ export class Agent {
     }
     return systemPrompt({
       root: this.root, tools: this.toolDefs(), fallback: !this.native, explain: this.mode === 'explain',
-      emberMd: this.emberMd, memory: this._memText
+      emberMd: this.emberMd, memory: this._memText, small: this.isSmall()
     });
   }
 
@@ -227,19 +243,80 @@ export class Agent {
     const msgs = [{ role: 'system', content: sys }, ...this.messages.map(({ _toolResult, ...m }) => m)];
     const opts = { num_ctx: this.cfg.numCtx, temperature: this.cfg.temperature };
     try {
+      dlog('request', { model: this.model, native: !!this.native, small: this.isSmall(), mode: this.mode, tools: this.toolNames(), systemChars: sys.length, messages: msgs.length, lastUser: [...msgs].reverse().find((m) => m.role === 'user')?.content?.slice(0, 4000) });
       const r = await this.client.chat({ model: this.model, messages: msgs, tools: this.native ? this.toolDefs() : undefined, options: opts, onToken: (t) => filter.push(t), signal });
       stopThinking();
       filter.end();
+      r.hidden = filter.hidden();
+      dlog('reply', { model: this.model, content: r.content, tool_calls: r.tool_calls, stats: r.stats });
       return r;
     } catch (e) {
       stopThinking();
+      dlog('error', { model: this.model, message: e.message, unreachable: !!e.unreachable, oom: !!e.oom, status: e.status });
+      if (e.unreachable && !this._recovering && !signal?.aborted) {
+        if (await this.recoverOllama(e)) {
+          this._recovering = true;
+          try { return await this.chatOnce(signal, sys); } finally { this._recovering = false; }
+        }
+        throw friendly(e);
+      }
+      if (e.oom && !signal?.aborted) {
+        const running = this.client.listRunning ? await this.client.listRunning().catch(() => []) : [];
+        this.ui.print('');
+        this.ui.error(e.message);
+        this.ui.print(oomAdvice({ model: this.model, ramGB: Math.round(os.totalmem() / 1024 ** 3), running }));
+        throw friendly(e, 'Stopped: the model could not run (see the tips above).');
+      }
       if (e.noTools && this.native) {
         this.native = false;
         this.ui.print(c.gray('(model has no native tool calling; using JSON tool mode)'));
+        dlog('decision', { what: 'native tools rejected by Ollama, switching to text tool mode' });
         return this.chatOnce(signal, this.system(this.lastQuery));
       }
       throw e;
     }
+  }
+
+  /** Ollama is not answering: say so, offer to start it (asks first), then retry with backoff. */
+  async recoverOllama(e) {
+    const host = e.host || this.cfg.host;
+    this.ui.print('');
+    this.ui.error(`Can't reach Ollama at ${host}.`);
+    if (!this.client.version || this.cloud) return false;
+    if (await waitForServer(this.client, { timeoutMs: 1500 })) return true; // it was only restarting
+    const bin = ollamaBinary();
+    if (!bin) { this.ui.print(`  Ollama isn't installed or isn't on PATH. Install it with ${c.bold('ember setup')}, or start it yourself with ${c.bold('ollama serve')}.`); return false; }
+    if (!/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/|$)/.test(host)) { this.ui.print(`  ${host} is not on this computer, so Ember can't start it. Check that server, or use --host.`); return false; }
+    const ok = await this.ui.confirm('Start Ollama now (runs `ollama serve` in the background)?', { allowAlways: false });
+    if (ok !== 'y') { this.ui.print(`  OK. Start it yourself with ${c.bold('ollama serve')}, then try again.`); return false; }
+    this.ui.print(c.gray('  starting Ollama…'));
+    if (!(await ensureServer(this.client, { timeoutMs: 30000 }))) { this.ui.error(`Ollama did not start. Try ${c.bold('ollama serve')} in another terminal to see why.`); return false; }
+    this.ui.ok('Ollama is running');
+    dlog('decision', { what: 'started ollama serve after connection failure' });
+    return true;
+  }
+
+  /**
+   * Small models sometimes save code under the wrong name (todo.json for "write todo.py").
+   * Only when the target is a data file whose content isn't that format, and the request
+   * names exactly one other file that doesn't exist yet, is the write redirected there.
+   */
+  fixMisnamedWrite(call, userText) {
+    const args = call.arguments || {};
+    const p = String(args.path || args.file_path || args.filename || '').replace(/^\.\//, '');
+    const content = typeof args.content === 'string' ? args.content : null;
+    if (!p || content == null) return;
+    const ext = path.extname(p).toLowerCase();
+    let wrongFormat = false;
+    if (ext === '.json') { try { JSON.parse(content); } catch { wrongFormat = true; } }
+    else if (ext === '.txt' || ext === '.md') wrongFormat = /^\s*(import |from \S+ import|def |#!\/|const |function |package |#include)/m.test(content) && !/```/.test(content);
+    if (!wrongFormat) return;
+    const named = [...new Set(fileNamesIn(userText))].filter((f) => f !== p && path.extname(f).toLowerCase() !== ext);
+    if (named.length !== 1 || fs.existsSync(path.join(this.root, named[0])) || fs.existsSync(path.join(this.root, p))) return;
+    this.ui.print(c.gray(`  (the model named the file ${p}, but you asked for ${named[0]}; saving it as ${named[0]})`));
+    dlog('decision', { what: 'misnamed write redirected', from: p, to: named[0] });
+    call.arguments = { ...args, path: named[0] };
+    delete call.arguments.file_path; delete call.arguments.filename;
   }
 
   async execTool(name, args) {
@@ -269,7 +346,7 @@ export class Agent {
     this.messages.push({ role: 'user', content: hints === false ? userText : await this.withHints(userText) });
     const seen = new Map();
     let finalText = '';
-    let stuck = 0, nudged = false;
+    let stuck = 0, nudged = false, rescued = false, nudgedSave = false;
     const maxSteps = this.cfg.maxSteps || 25;
     for (let step = 0; step < maxSteps; step++) {
       if (signal?.aborted) throw new Error('aborted');
@@ -281,21 +358,52 @@ export class Agent {
       let viaText = false;
       let text = r.content || '';
       if (!calls.length) {
-        const parsed = parseToolCalls(text, names);
+        const parsed = parseToolCalls(text, names, this.toolDefs());
         if (parsed.calls.length) { calls = parsed.calls; viaText = true; text = parsed.text; }
+        dlog('parse', { native: native.length, textCalls: parsed.calls.map((x) => x.name), style: parsed.style, hiddenChars: (r.hidden || '').length });
+      } else dlog('parse', { native: calls.map((x) => x.name) });
+      // Code pasted into the reply instead of written with write_file (common with small models).
+      const writes = calls.some((x) => ['write_file', 'edit_file'].includes(x.name));
+      if (this.mode === 'agent' && !writes && !rescued && wantsFiles(userText)) {
+        const files = extractCodeFiles(r.content || '', userText).filter((f) => !calls.length || !fs.existsSync(path.join(this.root, f.path)));
+        if (files.length) {
+          rescued = true;
+          if (r.hidden && !calls.length) { this.ui.write(r.hidden); r.hidden = ''; }
+          const saved = await this.offerSave(files);
+          dlog('decision', { what: 'code in chat → offered save', files: files.map((f) => `${f.path} (${f.reason})`), saved });
+          if (!calls.length) {
+            this.messages.push({ role: 'assistant', content: r.content || '' });
+            if (saved.length) this.messages.push({ role: 'user', content: `(Ember saved the code from your reply to ${saved.join(', ')}. Next time call write_file yourself.)`, _toolResult: true });
+            finalText = text;
+            if (text && !text.endsWith('\n')) this.ui.write('\n');
+            break;
+          }
+        } else if (!calls.length && !nudgedSave && hasUnsavedCode(r.content || '')) {
+          // Code with no file name: ask the model once to save it properly.
+          nudgedSave = true;
+          if (r.hidden) { this.ui.write(r.hidden); r.hidden = ''; }
+          this.ui.print(c.gray('\n  (the model showed code without saving it; asking it to use write_file)'));
+          dlog('decision', { what: 'unsaved code without a file name → nudge to call write_file' });
+          this.messages.push({ role: 'assistant', content: r.content || '' });
+          this.messages.push({ role: 'user', content: `You put code in your reply but did not save it. Save it now: call write_file with "path" (a file name relative to the project) and "content" (the complete file).${this.native ? '' : ' Reply with ONLY the JSON tool call.'}`, _toolResult: true });
+          continue;
+        }
       }
       if (!calls.length) {
         // A JSON "call" to a tool that doesn't exist (small models do this instead of answering): nudge once.
         const bogus = !nudged && findJsonObjects(text).find((o) => typeof o.value?.name === 'string' && o.value.arguments && !names.includes(o.value.name) && text.replace(/```(json)?/g, '').trim().length <= o.end - o.start + 4);
         if (bogus) {
           nudged = true;
+          dlog('decision', { what: 'call to unknown tool → nudge', name: bogus.value.name });
           this.messages.push({ role: 'assistant', content: r.content || '' });
           this.messages.push({ role: 'user', content: `There is no tool named "${bogus.value.name}". Tools: ${names.join(', ')}. If you can answer now, reply to the developer in plain text (don't mention tools).`, _toolResult: true });
           continue;
         }
+        // The stream filter hid text that looked like a tool call but wasn't one: show it now.
+        if (r.hidden) { this.ui.write(r.hidden); dlog('decision', { what: 'no tool call found; showing held-back text', chars: r.hidden.length }); }
         this.messages.push({ role: 'assistant', content: r.content || '' });
         finalText = text;
-        if (text && !text.endsWith('\n')) this.ui.write('\n');
+        if ((r.hidden || text) && !(r.hidden || text).endsWith('\n')) this.ui.write('\n');
         break;
       }
       if (viaText || !this.native) this.messages.push({ role: 'assistant', content: r.content || '' });
@@ -313,11 +421,13 @@ export class Agent {
             : 'You already made this exact call twice. Do something different or finish with a summary.';
         } else {
           progressed = true;
+          if (call.name === 'write_file' && this.mode === 'agent') this.fixMisnamedWrite(call, userText);
           if (!['write_file', 'edit_file', 'run_command', 'update_plan', 'remember'].includes(call.name)) {
             this.ui.print(c.gray(`  · ${call.name} ${summarizeArgs(call.arguments)}`));
           }
           try { result = String(await this.execTool(call.name, call.arguments || {})); }
           catch (e) { result = `Error: ${e.message}`; this.ui.print(c.red(`  ✗ ${e.message}`)); }
+          dlog('tool', { name: call.name, args: call.arguments, result: result.slice(0, 2000) });
         }
         if (viaText || !this.native) this.messages.push({ role: 'user', content: `Result of ${call.name}:\n${result}`, _toolResult: true });
         else this.messages.push({ role: 'tool', content: result, tool_name: call.name, tool_call_id: call.id });
@@ -330,6 +440,25 @@ export class Agent {
       if (step === maxSteps - 1) this.ui.warn('Reached the step limit for this turn. Say "continue" to keep going.');
     }
     return finalText;
+  }
+
+  /** Offer to save code blocks from a reply as files (each still shows a diff and asks). */
+  async offerSave(files) {
+    const saved = [];
+    this.ui.print('');
+    this.ui.print(c.yellow(`The model wrote code for ${files.map((f) => f.path).join(', ')} in its reply instead of saving it.`));
+    for (const f of files) {
+      try {
+        const abs = path.join(this.root, f.path);
+        if (fs.existsSync(abs)) {
+          const cur = fs.readFileSync(abs, 'utf8');
+          if (f.content.split('\n').length < cur.split('\n').length * 0.5) { this.ui.print(c.gray(`  (not offering ${f.path}: the code is only part of the existing file; ask Ember to edit it instead)`)); continue; }
+        }
+        const out = await writeFile(this.ctx, { path: f.path, content: f.content }, { question: `Save this code to ${f.path}?` });
+        if (/^(Created|Updated)/.test(out)) saved.push(f.path);
+      } catch (e) { this.ui.print(c.red(`  ✗ ${f.path}: ${e.message}`)); }
+    }
+    return saved;
   }
 
   /** Explain mode: read-only tools, plain-language answer. */
@@ -527,7 +656,18 @@ export class Agent {
   }
 }
 
-function safeJson(s) { try { return JSON.parse(s); } catch { return {}; } }
+/** An error the REPL can print as-is (no stack, no "fetch failed"). */
+function friendly(e, message) { const err = new Error(message || e.message); err.friendly = true; err.cause = e; err.unreachable = e.unreachable; err.oom = e.oom; return err; }
+
+function safeJson(s) { try { return parseLenient(s); } catch { return {}; } }
+
+/** Parameter count in billions from Ollama's details ("3.1B") or the tag ("qwen2.5-coder:1.5b"). */
+export function modelSizeB(model, paramSize) {
+  const p = /([\d.]+)\s*([BM])/i.exec(String(paramSize || ''));
+  if (p) return Number(p[1]) / (p[2].toUpperCase() === 'M' ? 1000 : 1);
+  const m = /[:\-_](\d+(?:\.\d+)?)b\b/i.exec(String(model || ''));
+  return m ? Number(m[1]) : Infinity;
+}
 
 function summarizeArgs(a = {}) {
   const v = a.path ?? a.pattern ?? a.command ?? '';

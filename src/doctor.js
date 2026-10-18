@@ -11,6 +11,9 @@ import { detectHardware, pickModel } from './hardware.js';
 import { profilePath, projectMemoryPath } from './memory.js';
 import { c } from './ui.js';
 import { BUILTIN_PROVIDERS, configPermsOk } from './cloud.js';
+import os from 'node:os';
+import { isCrostini } from './ollama.js';
+import { sizeOf, isLowMemory, missingOptional, modelWarnings } from './models.js';
 
 export async function runDoctor({ ui, root }) {
   const cfg = loadConfig();
@@ -35,15 +38,28 @@ export async function runDoctor({ ui, root }) {
       if (await client.hasModel(cfg.model)) {
         ui.ok(`Model ${cfg.model} is installed`);
         const t = await client.supportsTools(cfg.model);
-        ui.ok(`Tool calling: ${t === false ? 'JSON fallback mode' : t ? 'native' : 'unknown (will try native, then fall back)'}`);
+        const mode = cfg.toolMode && cfg.toolMode !== 'auto' ? ` (toolMode "${cfg.toolMode}" from config)` : '';
+        ui.ok(`Tool calling: ${t === false ? 'JSON fallback mode' : t ? 'native' : 'unknown (will try native, then fall back)'}${mode}; Ember also reads tool calls written as text${(sizeOf(cfg.model) ?? 99) <= 4 ? ' and uses its short small-model prompt' : ''}`);
       } else bad(`Model ${cfg.model} is not downloaded. Run: ember setup  (or: ollama pull ${cfg.model})`);
     } catch (e) { bad(`Could not list models: ${e.message}`); }
   }
 
+  if (v) {
+    const ramGB = Math.round(os.totalmem() / 1024 ** 3);
+    const running = await client.listRunning();
+    if (running.length) ui.print(c.gray('· ') + `Loaded in Ollama now: ${running.map((m) => `${m.name} ${(m.size / 1024 ** 3).toFixed(1)} GB`).join(', ')}`);
+    for (const w of modelWarnings({ model: cfg.model, ramGB, running })) ui.warn(w);
+    if (isLowMemory(cfg, os.totalmem() / 1024 ** 3)) ui.print(c.yellow('! ') + `Low-memory mode (${ramGB} GB RAM): one model for everything, no parallel helpers, keep_alive 10m. Tips: README → "Low-memory machines". No room for a local model? Free Ollama cloud models (ollama signin, then ember -m <model>:cloud) or Ember Pro (cloud:grok).`);
+    let missing = null;
+    try { missing = await missingOptional(client, cfg); } catch { /* offline */ }
+    if (missing && missing.length) {
+      ui.print(c.gray('· ') + 'Optional models not installed:');
+      for (const x of missing) ui.print(`    ${x.model} ${c.gray(`(${x.size}) ${x.what}`)}  →  ${c.yellow(`ollama pull ${x.model}`)}${x.heavy && isLowMemory(cfg) ? c.gray('  (needs ~4 GB free; skip on this machine)') : ''}`);
+      ui.print(c.gray(`    (or run ember setup to choose)`));
+    } else if (missing) ui.ok('Optional models: all installed');
+  }
   if (cfg.fastModel && v) { try { ui.print(((await client.hasModel(cfg.fastModel)) ? c.green('✓ ') + `Fast helper model ${cfg.fastModel} (commit messages, explain, memory)` : c.yellow('! ') + `Fast helper model ${cfg.fastModel} missing (ollama pull ${cfg.fastModel})`)); } catch { /* ignore */ } }
   ui.print(c.green('✓ ') + `keep_alive ${cfg.keepAlive} · num_ctx ${cfg.numCtx}`);
-  const vm = cfg.visionModel || 'qwen2.5vl:3b';
-  if (v) { try { ui.print(((await client.hasModel(vm)) ? c.green('✓ ') + `Vision model ${vm} installed` : c.gray('· ') + `Vision model ${vm} not installed (optional: ember setup --vision)`)); } catch { /* ignore */ } }
   ui.print(c.green('✓ ') + `Self-fix loop: ${cfg.selfFix?.enabled !== false ? `on (up to ${cfg.selfFix?.maxAttempts ?? 3} attempts)` : 'off'} · git checkpoints: ${cfg.git?.checkpoints !== false ? 'on' : 'off'} · web lookup: ${cfg.web?.enabled ? 'on' : 'off'}`);
   for (const [name, p] of Object.entries({ ...BUILTIN_PROVIDERS, ...(cfg.providers || {}) })) {
     const has = (p.apiKeyEnv && process.env[p.apiKeyEnv]) || p.apiKey;
@@ -53,7 +69,8 @@ export async function runDoctor({ ui, root }) {
   const hw = detectHardware();
   ui.ok(`Hardware: ${hw.ramGB} GB RAM${hw.gpu ? `, ${hw.gpu}` : ''} → recommended ${pickModel(hw)}`);
   const rg = spawnSync('rg', ['--version']);
-  ui.print((rg.status === 0 ? c.green('✓ ') : c.gray('· ')) + `ripgrep ${rg.status === 0 ? 'found (fast search)' : 'not found (using built-in search)'}`);
+  ui.print((rg.status === 0 ? c.green('✓ ') : c.gray('· ')) + `ripgrep ${rg.status === 0 ? 'found (fast search)' : `not found (using built-in search; optional: ${process.platform === 'darwin' ? 'brew install ripgrep' : 'sudo apt install ripgrep'})`}`);
+  if (isCrostini()) ui.print(c.gray('· ') + 'ChromeOS Linux (Crostini) detected. Memory for Linux is set in Settings → About ChromeOS → Developers → Linux development environment.');
 
   const mem = cfg.memory?.enabled !== false;
   ui.print(c.green('✓ ') + `Memory: ${mem ? 'on' : 'off'}${mem ? ` · profile ${fs.existsSync(profilePath()) ? profilePath() : '(empty)'}` : ''}`);

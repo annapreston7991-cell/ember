@@ -1,6 +1,6 @@
 {
   "name": "llyverse-ember",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Ember: a local, private command-line AI coding agent powered by Ollama. Part of the LLYVerse.",
   "type": "module",
   "bin": {

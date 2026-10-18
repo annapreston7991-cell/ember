@@ -20,6 +20,10 @@ import { runWatch } from './watch.js';
 import { NEW_PROJECT_PROMPT } from './prompt.js';
 import { git } from './git.js';
 import { configPermsOk } from './cloud.js';
+import os from 'node:os';
+import { saveConfig } from './config.js';
+import { enableDebug, debugHeader, dlog } from './debug.js';
+import { CONFIG_VERSION, offerExtras, applyLowMemory, modelWarnings } from './models.js';
 
 const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'));
 
@@ -28,7 +32,9 @@ const USAGE = `${c.bold().yellow('Ember')} ${pkg.version} — a local AI coding 
 Usage
   ember                     start an interactive session in this folder
   ember "add a dark mode"   do one task and exit
-  ember setup [--model m]   install/start Ollama and download a coding model
+  ember setup [--model m]   install/start Ollama, pick a coding model, offer optional extras (re-runnable)
+  ember plan ["idea"]       talk through an app/website idea; Ember writes .ember/plan.md for you to approve
+  ember build               Ember builds the approved plan task by task (resumable; Ctrl+C stops safely)
   ember doctor              check Ollama, the model and your config
   ember pro [status|activate <key>|deactivate]   Ember Pro (cloud models, team memory, premium plugins)
   ember serve               JSON-RPC over stdio for editors (used by the VS Code extension)
@@ -49,6 +55,7 @@ Options
   -C, --cwd <dir>      project folder (default: current folder)
       --host <url>     Ollama URL (default http://127.0.0.1:11434)
       --no-memory      don't read or write memory for this run
+      --debug          log raw model replies and tool decisions to ~/.ember/logs (or EMBER_DEBUG=1)
   -v, --version        print the version
   -h, --help           show this help
 `;
@@ -69,6 +76,7 @@ export function parseArgs(argv) {
     else if (a === '--dir') opts.dir = next();
     else if (a === '--file') opts.file = next();
     else if (a === '--no-speak') opts.noSpeak = true;
+    else if (a === '--debug') opts.debug = true;
     else if (a === '-v' || a === '--version') opts.version = true;
     else if (a === '-h' || a === '--help') opts.help = true;
     else if (a === '--') { opts._.push(...argv.slice(i + 1)); break; }
@@ -85,6 +93,11 @@ export async function main(argv) {
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) throw new Error(`Not a directory: ${root}`);
   const ui = new UI({ yes: !!opts.yes });
   const [cmd, ...rest] = opts._;
+  if ((opts.debug || /^(1|true|yes)$/i.test(process.env.EMBER_DEBUG || '')) && cmd !== 'serve') {
+    const f = enableDebug();
+    debugHeader({ version: pkg.version, cfg: loadConfig(), extra: { argv } });
+    ui.print(c.gray(`  (debug log: ${f})`));
+  } else if (opts.debug || process.env.EMBER_DEBUG) { enableDebug(); debugHeader({ version: pkg.version, cfg: loadConfig(), extra: { argv } }); }
 
   try {
     if (cmd === 'setup') return (await runSetup({ ui, model: opts.model, yes: opts.yes, vision: opts.vision })) ? 0 : 1;
@@ -121,7 +134,7 @@ export async function main(argv) {
       if (!ready && !usable) {
         ui.print(c.yellow(cfg._exists ? `Model ${cfg.model} isn't available yet, so let's finish setup first.` : 'Welcome to Ember! First-time setup: this gets Ollama and a coding model ready (one time).'));
         ui.print('');
-        const ok = await runSetup({ ui, model: opts.model || (cfg._exists ? cfg.model : undefined), yes: opts.yes, askVision: false, host: opts.host });
+        const ok = await runSetup({ ui, model: opts.model || (cfg._exists ? cfg.model : undefined), yes: opts.yes, host: opts.host });
         if (!ok) { ui.error(`Setup didn't finish. Fix the issue above, then run ${c.bold('ember')} again (or ${c.bold('ember doctor')}).`); return 1; }
         ui.print('');
         const fresh = loadConfig();
@@ -129,6 +142,27 @@ export async function main(argv) {
         cfg._exists = true;
         ({ client, cloud } = clientFor(cfg.model, cfg));
       }
+    }
+
+    if (!cloud) {
+      // Updated from an older Ember: offer the new optional models once (embeddings, vision, fast model).
+      if (cfg._exists && (cfg.configVersion || 1) < CONFIG_VERSION) {
+        ui.print(c.yellow(`Ember ${pkg.version} can use a few optional models you don't have yet:`));
+        const { pullWithProgress } = await import('./setup.js');
+        await offerExtras({ ui, client, cfg, yes: opts.yes, interactive: !!process.stdin.isTTY, pull: (m) => pullWithProgress(client, m, ui) });
+        const saved = loadConfig();
+        saved.configVersion = CONFIG_VERSION;
+        if (cfg.fastModel && !saved.fastModel) saved.fastModel = cfg.fastModel;
+        saveConfig(saved);
+        ui.print(c.gray(`  (asked once; run ${c.bold('ember setup')} any time to add extras, ${c.bold('ember doctor')} to see what's missing)`));
+        ui.print('');
+      }
+      if (applyLowMemory(cfg)) {
+        client.keepAlive = cfg.keepAlive;
+        dlog('decision', { what: 'low-memory mode: one model, no parallel helpers, keep_alive ' + cfg.keepAlive, ramGB: +(os.totalmem() / 1024 ** 3).toFixed(1) });
+      }
+      const running = await client.listRunning?.().catch(() => []) || [];
+      for (const w of modelWarnings({ model: cfg.model, running })) ui.warn(w);
     }
 
     // `ember new`: make the folder first so the agent's project root is the new project.
@@ -177,6 +211,20 @@ export async function main(argv) {
       return await runVoice({ agent, ui, cfg, file: opts.file && path.resolve(opts.file), speakOut: !opts.noSpeak && cfg.voice?.tts !== false });
     }
     if (cmd === 'watch') return await runWatch({ agent, ui, cfg, root: projectRoot });
+    if (cmd === 'plan' || cmd === 'build') {
+      const { planSession, buildSession } = await import('./plan.js');
+      const { buildPreview } = await import('./repl.js');
+      const controller = new AbortController();
+      ui.onInterrupt = () => controller.abort();
+      process.on('SIGINT', () => controller.abort());
+      try {
+        if (cmd === 'plan') {
+          const plan = await planSession({ agent, ui, idea: rest.join(' ').trim(), signal: controller.signal, yes: opts.yes });
+          if (plan?.status === 'approved' && !opts.yes && process.stdin.isTTY && (await ui.confirm('Start building now?', { allowAlways: false })) === 'y') await buildSession({ agent, ui, signal: controller.signal, preview: buildPreview({ agent, ui, cfg }) });
+        } else await buildSession({ agent, ui, signal: controller.signal, yes: opts.yes, preview: buildPreview({ agent, ui, cfg }) });
+      } catch (e) { if (!controller.signal.aborted) throw e; ui.warn('Stopped.'); }
+      return 0;
+    }
 
     if (opts._.length) {
       // `ember fix the tests` and `ember "fix the tests"` both work.

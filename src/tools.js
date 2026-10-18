@@ -10,6 +10,8 @@ import { resolveInside, isAllowlisted, isDestructive, commandKind } from './safe
 import { applyEdit } from './edit.js';
 import { renderDiff, diffStats, c } from './ui.js';
 import { emberHome, saveConfig } from './config.js';
+import { dlog } from './debug.js';
+import { buildCommandPolicy } from './plan.js';
 
 const MAX_OUT = 12000;
 const IGNORE = new Set(['node_modules', '.git', 'dist', 'build', '.next', 'coverage', '.ember', '__pycache__', '.venv']);
@@ -143,7 +145,7 @@ function backup(ctx, abs, before) {
 /** Run fn while holding the shared approval lock (parallel helpers never interleave prompts). */
 const serial = (ctx, fn) => (ctx.uiLock ? ctx.uiLock.run(fn) : fn());
 
-async function applyChange(ctx, abs, before, after, label) {
+async function applyChange(ctx, abs, before, after, label, question) {
   const r = rel(ctx, abs);
   if (before === after) return `No changes needed in ${r}.`;
   if (ctx.locks) {
@@ -151,23 +153,29 @@ async function applyChange(ctx, abs, before, after, label) {
     if (holder && holder !== ctx.owner) return `${r} is being changed by the ${holder} helper right now. Do not edit it; work on your own files and mention what ${r} still needs in your summary.`;
     ctx.locks.acquire(abs, ctx.owner);
   }
-  return serial(ctx, () => applyChangeNow(ctx, abs, before, after, label, r));
+  return serial(ctx, () => applyChangeNow(ctx, abs, before, after, label, r, question));
 }
 
-async function applyChangeNow(ctx, abs, before, after, label, r) {
+async function applyChangeNow(ctx, abs, before, after, label, r, question) {
   // Another helper may have written this file while we waited for the approval lock.
   const current = fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : null;
   if (ctx.locks && current !== before) return `${r} changed while you were working (another helper or the user edited it). Read it again and redo your change.`;
   let ok;
-  if (ctx.ui.reviewChange && !ctx.always.writes) {
+  if (ctx.policy === 'build') {
+    // ember build: file writes inside the project are approved by the plan (path already checked).
+    const st0 = diffStats(before, after);
+    ctx.ui.print(c.gray(`  ${label.toLowerCase()} ${r} (+${st0.add} -${st0.del}) · auto-approved in build mode`));
+    ok = 'y';
+  } else if (ctx.ui.reviewChange && !ctx.always.writes) {
     // Editors (ember serve) show their own diff view and answer y / n / a.
     ok = await ctx.ui.reviewChange({ path: r, abs, before, after, label, stats: diffStats(before, after) });
   } else {
     ctx.ui.print('');
     ctx.ui.print(c.bold(`${label} ${r}`));
     ctx.ui.print(renderDiff(r, before, after));
-    ok = ctx.always.writes ? 'y' : await ctx.ui.confirm(`Apply this change to ${r}?`);
+    ok = ctx.always.writes ? 'y' : await ctx.ui.confirm(question || `Apply this change to ${r}?`);
   }
+  dlog('approval', { path: r, label, answer: ok });
   if (ok === 'a') { ctx.always.writes = true; ok = 'y'; }
   if (ok !== 'y') {
     ctx.session.events.push({ type: 'rejected', tool: 'file', detail: `${label} ${r}` });
@@ -184,11 +192,37 @@ async function applyChangeNow(ctx, abs, before, after, label, r) {
   return `${before === null ? 'Created' : 'Updated'} ${r} (+${st.add} -${st.del}).`;
 }
 
-export async function writeFile(ctx, { path: p, content }) {
-  if (typeof content !== 'string') throw new Error('content must be a string');
+/** Small models send file content as a list of lines or a JSON object; accept those too. */
+export function coerceContent(content, p = '') {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content) && content.every((l) => typeof l === 'string')) return content.join('\n') + (content.length ? '\n' : '');
+  if (content && typeof content === 'object') return JSON.stringify(content, null, 2) + '\n';
+  if (typeof content === 'number' || typeof content === 'boolean') return String(content);
+  throw new Error(`content must be the full text of ${p || 'the file'} (a string)`);
+}
+
+/** Argument names small models use instead of ours (file_path, filename, code, text…). */
+export function normalizeArgs(name, args) {
+  const a = args && typeof args === 'object' && !Array.isArray(args) ? { ...args } : {};
+  if (['read_file', 'write_file', 'edit_file', 'list_dir', 'search'].includes(name) && a.path === undefined) {
+    for (const k of ['file_path', 'filepath', 'filename', 'file_name', 'file', 'path_name', 'dir', 'directory']) if (typeof a[k] === 'string') { a.path = a[k]; delete a[k]; break; }
+  }
+  if (name === 'write_file' && a.content === undefined) {
+    for (const k of ['contents', 'text', 'code', 'data', 'body', 'source', 'file_content']) if (a[k] !== undefined) { a.content = a[k]; delete a[k]; break; }
+  }
+  if (name === 'edit_file') {
+    if (a.search === undefined) for (const k of ['old', 'old_text', 'old_string', 'find', 'original']) if (a[k] !== undefined) { a.search = a[k]; delete a[k]; break; }
+    if (a.replace === undefined) for (const k of ['new', 'new_text', 'new_string', 'replacement', 'updated']) if (a[k] !== undefined) { a.replace = a[k]; delete a[k]; break; }
+  }
+  if (name === 'run_command' && a.command === undefined) for (const k of ['cmd', 'shell', 'script']) if (typeof a[k] === 'string') { a.command = a[k]; delete a[k]; break; }
+  return a;
+}
+
+export async function writeFile(ctx, { path: p, content }, { question } = {}) {
+  const text = coerceContent(content, p);
   const abs = resolveInside(ctx.root, p);
   const before = fs.existsSync(abs) ? fs.readFileSync(abs, 'utf8') : null;
-  return applyChange(ctx, abs, before, content, before === null ? 'Create' : 'Overwrite');
+  return applyChange(ctx, abs, before, text, before === null ? 'Create' : 'Overwrite', question);
 }
 
 export async function editFile(ctx, { path: p, search: s, replace, replace_all }) {
@@ -209,6 +243,14 @@ async function runCommandNow(ctx, { command, timeout_sec = 120 }) {
   const allowed = isAllowlisted(cmd, ctx.cfg.allowlist);
   ctx.ui.print('');
   ctx.ui.print(c.bold('Run ') + c.yellow(`$ ${cmd}`) + (allowed ? c.gray('  (allowlisted)') : ''));
+  const policy = ctx.policy === 'build' ? buildCommandPolicy(cmd, ctx.root) : null;
+  if (policy === 'auto') {
+    ctx.ui.print(c.gray('  (build mode: safe project command, auto-approved)'));
+    ctx.session.events.push({ type: 'accepted', tool: 'command', detail: cmd });
+    dlog('approval', { command: cmd, policy });
+    return execShell(ctx, cmd, timeout_sec);
+  }
+  if (policy === 'ask') ctx.ui.print(c.yellow('  build mode: this command reaches outside the project (system packages, network or other folders), so Ember asks'));
   if (isDestructive(cmd)) {
     const ok = await ctx.ui.confirmDangerous(`"${cmd}" looks destructive.`);
     if (!ok) {
@@ -282,7 +324,8 @@ export function rememberTool(ctx, { note, scope }) {
   return 'Saved.';
 }
 
-export async function executeTool(ctx, name, args) {
+export async function executeTool(ctx, name, rawArgs) {
+  const args = normalizeArgs(name, rawArgs);
   switch (name) {
     case 'list_dir': return listDir(ctx, args);
     case 'read_file': return readFile(ctx, args);

@@ -4,6 +4,32 @@
 -->
 # Changelog
 
+## v0.2.1 (2026-10-18)
+
+### Fixed: "Ember is not writing files" on small models
+- Replies that looked like a tool call but didn't parse were hidden and then thrown away, so you saw nothing and nothing was written. They are shown now.
+- Tool calls written as text are read even when they're broken the way small models break them: a missing closing brace, an unterminated string, raw newlines, trailing commas, `<tool_call>` tags, `write_file(path=…, content=…)`, or other argument names (`file_path`, `code`, …). File content sent as a list of lines is accepted.
+- When the model pastes code in the chat instead of saving it, Ember finds the file it belongs to and asks "Save this code to todo.py?". If no filename is given, it asks the model once more to call `write_file`.
+- Models with ≤ 4B parameters get a short, strict system prompt with an example.
+- Approvals: a stray Enter no longer counts as "no", and an empty answer asks again. When there's no input (piped stdin), Ember warns loudly instead of silently answering "no".
+- Paths: `~/…` and a leading `/` (as in "/hello.py") now resolve inside the project.
+
+### Setup and models
+- Updating from an older config offers the missing extras once (embeddings, vision). `ember setup` can be re-run to add them and keeps your model. `ember doctor` lists missing optional models with the `ollama pull` command.
+- Setup reuses a coding model you already have. `qwen2.5-coder:3b` is now recommended from 4 GB (Chromebooks included). The doctor warns that 1.5B is unreliable and shows other loaded models that compete for memory.
+- Low-memory mode (≤ 6.5 GB): one model, no fast model or parallel helpers, and shorter `keep_alive`.
+
+### Ollama errors
+- No more bare "fetch failed": "Can't reach Ollama at <url>". Ember waits briefly for a starting server (with backoff) and offers to start `ollama serve`.
+- Out-of-memory and crashed model loads are recognized and come with concrete advice.
+
+### New: plan and build
+- `ember plan` / `/plan`: clarifying questions, then a spec and task list in `.ember/plan.md` that you approve or edit.
+- `ember build` / `/build`: builds task by task with git checkpoints, tests and self-fix. File writes and safe in-project commands are auto-approved. Risky commands still ask. It's resumable, and `/pause` and Ctrl+C stop safely.
+
+### Debugging
+- `ember --debug` / `EMBER_DEBUG=1` writes a redacted log to `~/.ember/logs`.
+
 ## v0.2.0 (2026-10-17)
 
 ### Faster

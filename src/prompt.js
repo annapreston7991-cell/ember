@@ -13,8 +13,28 @@ const EXPLAIN = `EXPLAIN mode: read-only, never edit or run anything.
 Explain in plain, friendly language for a non-expert: one short summary paragraph, then at most
 5 bullets (how it works, anything risky or broken, with file:line). Under 180 words.`;
 
-export function systemPrompt({ root, tools = [], toolNames, fallback, explain, emberMd, memory }) {
+// Small local models (1.5B-4B) follow short, concrete rules much better than long ones.
+const SMALL_RULES = (root, fallback) => `You are Ember, a coding agent. You work on the user's files in ${root} using tools.
+Rules:
+- To create or change a file you MUST call write_file (new file / whole file) or edit_file. Never paste file contents in your reply instead.
+- Use paths relative to the project, like "hello.py" or "src/app.js".
+- Put the complete file in "content". Do exactly what was asked, nothing extra.
+- Read a file with read_file before editing it.
+- After the files are written, reply with one short sentence and no tool call.${fallback ? '' : `
+Example: user "create hi.py that prints hi" → call write_file with {"path": "hi.py", "content": "print('hi')\n"}`}`;
+
+export function systemPrompt({ root, tools = [], toolNames, fallback, explain, emberMd, memory, small }) {
   const names = toolNames || tools.map((t) => t.function.name);
+  if (small && !explain) {
+    const parts = [SMALL_RULES(root, fallback)];
+    if (fallback) parts.push(`To use a tool, reply with ONLY one JSON object, nothing else:
+{"tool": "write_file", "arguments": {"path": "hi.py", "content": "print('hi')\n"}}
+Tools: ${tools.length ? tools.map(toolSignature).join(' ') : names.join(', ')}.
+You get the result in the next message. When finished, reply in plain text with no JSON.`);
+    if (emberMd) parts.push(`Project instructions (EMBER.md):\n${emberMd.slice(0, 2000)}`);
+    if (memory) parts.push(`User preferences:\n${memory.slice(0, 800)}`);
+    return parts.join('\n\n');
+  }
   const parts = [
 `You are Ember, a local coding agent in the user's terminal (part of the LLYVerse).
 Project: ${root} (${os.platform()}). Today: ${new Date().toISOString().slice(0, 10)}.

@@ -4,8 +4,9 @@
  */
 import { spawnSync } from 'node:child_process';
 import { OllamaClient, ollamaBinary, ensureServer } from './ollama.js';
-import { detectHardware, pickModel, pickFastModel, pickNumCtx } from './hardware.js';
+import { detectHardware, pickModel, pickNumCtx } from './hardware.js';
 import { loadConfig, saveConfig, configPath } from './config.js';
+import { CONFIG_VERSION, isLowMemory, reusableModel, missingOptional, offerExtras, modelWarnings } from './models.js';
 import { c } from './ui.js';
 
 function fmtBytes(n) {
@@ -76,15 +77,33 @@ export async function runSetup({ ui, model: forcedModel, yes, vision, askVision 
     ui.ok('Ollama server started');
   }
 
-  // 3. Hardware + model choice
+  // 3. Hardware + model choice (reuse what is already installed when it fits)
   const hw = detectHardware();
-  ui.ok(`Hardware: ${hw.ramGB} GB RAM, ${hw.cpus} CPU threads${hw.gpu ? `, ${hw.gpu}${hw.vramGB ? ` (${hw.vramGB} GB ${hw.appleSilicon ? 'usable by the GPU' : 'VRAM'})` : ''}` : ', no dedicated GPU detected (CPU mode)'}`);
+  const lowMem = isLowMemory(cfg, hw.ramGB);
+  ui.ok(`Hardware: ${hw.ramGB} GB RAM, ${hw.cpus} CPU threads${hw.gpu ? `, ${hw.gpu}${hw.vramGB ? ` (${hw.vramGB} GB ${hw.appleSilicon ? 'usable by the GPU' : 'VRAM'})` : ''}` : ', no dedicated GPU detected (CPU mode)'}${lowMem ? c.yellow(' · low-memory mode') : ''}`);
   const recommended = pickModel(hw);
-  const model = forcedModel || recommended;
-  ui.ok(`Model: ${c.bold(model)}${forcedModel ? c.gray(` (you chose it; recommended for this machine: ${recommended})`) : c.gray(' (picked for this machine; override with --model)')}`);
+  let installed = [];
+  try { installed = await client.listModels({ timeoutMs: 5000 }); } catch { /* listed below as missing */ }
+  const has = (n) => installed.some((m) => m.name === n || m.name === `${n}:latest`);
+  if (installed.length) ui.print(c.gray(`  installed in Ollama: ${installed.map((m) => `${m.name} (${(m.size / 1e9).toFixed(1)} GB)`).join(', ')}`));
+  let model = forcedModel;
+  if (!model && cfg._exists && cfg.model && !String(cfg.model).startsWith('cloud:') && has(cfg.model)) {
+    model = cfg.model; // re-running setup keeps your model; it only adds what is missing
+    ui.ok(`Model: ${c.bold(model)} ${c.gray(`(your current model; recommended for this machine: ${recommended}${model !== recommended ? `, switch with: ember setup --model ${recommended}` : ''})`)}`);
+  }
+  if (!model) {
+    const reuse = reusableModel(installed, recommended);
+    if (reuse && reuse !== recommended) {
+      const ans = yes ? 'y' : await ui.confirm(`You already have ${c.bold(reuse)} installed. Use it instead of downloading ${recommended}?`, { allowAlways: false });
+      if (ans === 'y') model = reuse;
+    }
+    model = model || recommended;
+    ui.ok(`Model: ${c.bold(model)}${forcedModel ? '' : model === recommended ? c.gray(' (picked for this machine; override with --model)') : c.gray(` (already installed; recommended: ${recommended})`)}`);
+  }
+  for (const w of modelWarnings({ model, ramGB: hw.ramGB, running: await client.listRunning() })) ui.warn(w);
 
   // 4. Pull
-  if (await client.hasModel(model)) ui.ok(`${model} is already downloaded`);
+  if (has(model) || (await client.hasModel(model).catch(() => false))) ui.ok(`${model} is already downloaded`);
   else {
     ui.info(`Downloading ${model} (one time, this can take a while)…`);
     try { await pullWithProgress(client, model, ui); }
@@ -92,43 +111,21 @@ export async function runSetup({ ui, model: forcedModel, yes, vision, askVision 
     ui.ok(`${model} downloaded`);
   }
 
-  // 4b. Fast helper model for quick jobs (commit messages, explain, memory)
-  const fastModel = cfg.fastModel === false ? null : (cfg.fastModel || pickFastModel(model, hw));
-  if (fastModel) {
-    if (await client.hasModel(fastModel)) ui.ok(`Fast helper model ${fastModel} is ready`);
-    else {
-      ui.info(`Downloading the small helper model ${fastModel} (~1 GB) for quick jobs…`);
-      try { await pullWithProgress(client, fastModel, ui); ui.ok(`${fastModel} downloaded`); }
-      catch (e) { ui.warn(`Helper model download failed (${e.message}); Ember will use ${model} for everything.`); }
-    }
+  // 5. Optional extras: fast helper model, vision model, embedding model (asked every time setup runs
+  // and once after an update; low-memory machines skip the heavy ones and use one model for everything).
+  cfg.model = model;
+  if (lowMem && cfg.fastModel) { ui.print(c.gray(`  low-memory mode: using ${model} for everything (no separate fast model)`)); cfg.fastModel = null; }
+  if (vision && !has(cfg.visionModel || 'qwen2.5vl:3b')) {
+    const vm = cfg.visionModel || 'qwen2.5vl:3b';
+    try { await pullWithProgress(client, vm, ui); ui.ok(`${vm} downloaded`); } catch (e) { ui.warn(`Vision model download failed (${e.message}). Retry: ollama pull ${vm}`); }
   }
-
-  // 5. Optional vision model for screenshots (/image)
-  const vmodel = cfg.visionModel || 'qwen2.5vl:3b';
-  if (await client.hasModel(vmodel)) ui.ok(`Vision model ${vmodel} is ready (for screenshots)`);
-  else {
-    const want = vision ? 'y' : (yes || !askVision) ? 'n' : await ui.confirm(`Optional: also download ${vmodel} (~3 GB) so Ember can look at screenshots?`, { allowAlways: false });
-    if (want === 'y') {
-      try { await pullWithProgress(client, vmodel, ui); ui.ok(`${vmodel} downloaded`); }
-      catch (e) { ui.warn(`Vision model download failed (${e.message}). You can retry later with: ember setup --vision`); }
-    } else ui.print(c.gray(`  skipped. Later: ember setup --vision (or Ember will offer it the first time you share an image)`));
-  }
-
-  // 6. Optional embedding model for the project index (better "find the right file")
-  const emodel = cfg.index?.embedModel || 'nomic-embed-text';
-  if (await client.hasModel(emodel)) ui.ok(`Embedding model ${emodel} is ready (smarter project index)`);
-  else {
-    const want = (yes || !askVision) ? 'n' : await ui.confirm(`Optional: download ${emodel} (~270 MB) so the project index can search by meaning?`, { allowAlways: false });
-    if (want === 'y') {
-      try { await pullWithProgress(client, emodel, ui); ui.ok(`${emodel} downloaded`); }
-      catch (e) { ui.warn(`Embedding model download failed (${e.message}). The index still works with keywords and symbols.`); }
-    } else ui.print(c.gray(`  skipped. The index still works with keywords and symbols. Later: ollama pull ${emodel}`));
-  }
+  const extras = await missingOptional(client, cfg, { lowMemory: lowMem });
+  if (extras && !extras.length) ui.ok('Optional models: all installed (project index embeddings, vision' + (cfg.fastModel ? ', fast helper' : '') + ')');
+  await offerExtras({ ui, client, cfg, yes, interactive: askVision !== false, pull: (m) => pullWithProgress(client, m, ui) });
 
   // 7. Config
-  cfg.model = model;
   cfg.lastLocalModel = model;
-  if (fastModel && (await client.hasModel(fastModel))) cfg.fastModel = fastModel;
+  cfg.configVersion = CONFIG_VERSION;
   if (!cfg._numCtxSetByUser) cfg.numCtx = pickNumCtx(hw);
   saveConfig(cfg);
   ui.ok(`Saved settings to ${configPath()}`);

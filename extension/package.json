@@ -2,7 +2,7 @@
   "name": "ember-llyverse",
   "displayName": "Ember — local AI coding agent",
   "description": "Chat with Ember, a local AI coding agent running on Ollama. Review and apply its diffs, explain selections. Part of the LLYVerse.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "llyverse",
   "license": "SEE LICENSE IN LICENSE",
   "icon": "media/icon.png",
