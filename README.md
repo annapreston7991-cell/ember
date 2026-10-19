@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/ember-icon.png" alt="Ember icon" width="128">
+</p>
+
 # 🔥 Ember
 
 **A command-line AI coding agent that runs entirely on your own computer.**
