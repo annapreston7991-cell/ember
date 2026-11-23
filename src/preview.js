@@ -37,7 +37,7 @@ export function detectDevServer(root, cfg = {}) {
       const script = scripts[name];
       const guess = PORT_GUESS.find(([re]) => re.test(script));
       const m = script.match(/(?:--port[ =]|-p\s+|PORT=)(\d{2,5})/);
-      return { kind: 'script', command: `${pm} run ${name}`, script, port: m ? +m[1] : guess ? guess[1] : 3000 };
+      return { kind: 'script', command: `${pm} run ${name}`, script, port: m ? +m[1] : guess ? guess[1] : null };
     }
   }
   if (fs.existsSync(path.join(root, 'manage.py'))) return { kind: 'django', command: 'python3 manage.py runserver 8000', port: 8000 };

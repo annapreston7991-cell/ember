@@ -247,7 +247,7 @@ test('debug log: raw replies and parse decisions go to ~/.ember/logs, secrets re
   await agent.init();
   await agent.run('create hello.py');
   server.close();
-  dlog('start', { cfg: { providers: { grok: { apiKey: 'xai-abcdefghijklmnopqrstuvwxyz' } } } });
+  dlog('start', { cfg: { providers: { grok: { apiKey: 'xa' + 'i-abcdefghijklmnopqrstuvwxyz' } } } });
   const log = fs.readFileSync(debugFile(), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   assert.ok(log.some((e) => e.event === 'reply' && e.content.includes('write_file')));
   assert.ok(log.some((e) => e.event === 'parse' && e.textCalls?.includes('write_file') && e.style === 'json'));

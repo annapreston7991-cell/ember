@@ -23,7 +23,7 @@ Rules:
 - After the files are written, reply with one short sentence and no tool call.${fallback ? '' : `
 Example: user "create hi.py that prints hi" → call write_file with {"path": "hi.py", "content": "print('hi')\n"}`}`;
 
-export function systemPrompt({ root, tools = [], toolNames, fallback, explain, emberMd, memory, small }) {
+export function systemPrompt({ root, tools = [], toolNames, fallback, explain, emberMd, memory, skills, small }) {
   const names = toolNames || tools.map((t) => t.function.name);
   if (small && !explain) {
     const parts = [SMALL_RULES(root, fallback)];
@@ -57,6 +57,7 @@ You will receive the tool result in the next message. When you are finished, rep
   if (explain) parts.push(EXPLAIN);
   if (emberMd) parts.push(`Project instructions from EMBER.md (follow these):\n${emberMd.slice(0, 6000)}`);
   if (memory) parts.push(`What you have learned about this user and project (local memory):\n${memory}`);
+  if (skills) parts.push(skills);
   return parts.join('\n\n');
 }
 

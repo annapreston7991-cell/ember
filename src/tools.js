@@ -29,7 +29,24 @@ export const TOOL_DEFS = [
   fn('search', 'Regex search in the project; returns file:line matches.', { pattern: S, path: S, glob: S }, ['pattern']),
   fn('write_file', 'Create or overwrite a file.', { path: S, content: S }, ['path', 'content']),
   fn('edit_file', 'Replace an exact snippet in a file (must match once).', { path: S, search: S, replace: S, replace_all: { type: 'boolean' } }, ['path', 'search', 'replace']),
-  fn('run_command', 'Run a shell command in the project.', { command: S, timeout_sec: I }, ['command']),
+  fn('run_command', 'Run a shell command in the project. Set background: true for long-running processes or servers.', { command: S, timeout_sec: I, background: { type: 'boolean' }, wait_ms: I }, ['command']),
+  fn('manage_task', "Manage background processes: 'list', 'status', 'send_input', 'kill'.", {
+    action: { type: 'string', enum: ['list', 'status', 'send_input', 'kill'] },
+    task_id: S,
+    input: S
+  }, ['action']),
+  fn('load_skill', 'Load step-by-step procedural guidelines and examples for a specialized skill.', { name: S }, ['name']),
+  fn('create_artifact', 'Save a structured markdown document (report, design, plan, diagram) to persistent artifact storage.', {
+    title: S,
+    summary: S,
+    content: S,
+    request_feedback: { type: 'boolean' }
+  }, ['title', 'summary', 'content']),
+  fn('call_mcp_tool', 'Execute a tool on a configured MCP (Model Context Protocol) server.', {
+    server: S,
+    tool: S,
+    arguments: { type: 'object' }
+  }, ['server', 'tool']),
   fn('update_plan', 'Set the step list for multi-step work.', {
     steps: { type: 'array', items: { type: 'object', properties: { step: S, status: { type: 'string', enum: ['pending', 'in_progress', 'done'] } }, required: ['step', 'status'] } }
   }, ['steps']),
@@ -237,7 +254,7 @@ export async function runCommand(ctx, args) {
   return serial(ctx, () => runCommandNow(ctx, args || {}));
 }
 
-async function runCommandNow(ctx, { command, timeout_sec = 120 }) {
+async function runCommandNow(ctx, { command, timeout_sec = 120, background = false, wait_ms = 0 }) {
   if (typeof command !== 'string' || !command.trim()) throw new Error('command is required');
   const cmd = command.trim();
   const allowed = isAllowlisted(cmd, ctx.cfg.allowlist);
@@ -248,7 +265,7 @@ async function runCommandNow(ctx, { command, timeout_sec = 120 }) {
     ctx.ui.print(c.gray('  (build mode: safe project command, auto-approved)'));
     ctx.session.events.push({ type: 'accepted', tool: 'command', detail: cmd });
     dlog('approval', { command: cmd, policy });
-    return execShell(ctx, cmd, timeout_sec);
+    return execCommandWithMode(ctx, cmd, { timeout_sec, background, wait_ms });
   }
   if (policy === 'ask') ctx.ui.print(c.yellow('  build mode: this command reaches outside the project (system packages, network or other folders), so Ember asks'));
   if (isDestructive(cmd)) {
@@ -268,7 +285,50 @@ async function runCommandNow(ctx, { command, timeout_sec = 120 }) {
     ctx.session.events.push({ type: 'accepted', tool: 'command', detail: cmd });
     if (suggest) await suggestAllowlist(ctx, suggest);
   }
+  return execCommandWithMode(ctx, cmd, { timeout_sec, background, wait_ms });
+}
+
+async function execCommandWithMode(ctx, cmd, { timeout_sec, background, wait_ms }) {
+  if (ctx.tasks && (background || wait_ms > 0)) {
+    const res = await ctx.tasks.run({
+      cmd,
+      cwd: ctx.root,
+      waitMs: wait_ms || (background ? 500 : 0),
+      onOutput: (s) => { if (!ctx.quietCommands) ctx.ui.write(c.gray(s)); }
+    });
+    if (res.synchronous) {
+      return `exit code ${res.exitCode}\n${clip(res.output)}`;
+    }
+    return `Started background task ${res.taskId} (pid ${res.pid}). Status: running. Use manage_task to check progress or send input.`;
+  }
   return execShell(ctx, cmd, timeout_sec);
+}
+
+export function manageTask(ctx, { action, task_id, input }) {
+  if (!ctx.tasks) return 'Task manager is not initialized.';
+  if (action === 'list') {
+    const list = ctx.tasks.list();
+    if (!list.length) return 'No background tasks running.';
+    return list.map((t) => `${t.taskId}: [${t.status}] pid=${t.pid} (${t.runtimeSec}s) ${t.command}`).join('\n');
+  }
+  if (action === 'status') {
+    if (!task_id) return 'task_id is required for status.';
+    const s = ctx.tasks.status(task_id);
+    if (!s) return `Task ${task_id} not found.`;
+    return `[${s.status}] pid=${s.pid} runtime=${s.runtimeSec}s exitCode=${s.exitCode ?? 'none'}\nCommand: ${s.command}\nOutput:\n${clip(s.output, 6000)}`;
+  }
+  if (action === 'send_input') {
+    if (!task_id) return 'task_id is required for send_input.';
+    if (typeof input !== 'string') return 'input is required for send_input.';
+    const ok = ctx.tasks.sendInput(task_id, input);
+    return ok ? `Sent input to ${task_id}.` : `Could not send input to ${task_id}.`;
+  }
+  if (action === 'kill') {
+    if (!task_id) return 'task_id is required for kill.';
+    const ok = ctx.tasks.kill(task_id);
+    return ok ? `Task ${task_id} killed.` : `Could not kill task ${task_id}.`;
+  }
+  return `Unknown action "${action}".`;
 }
 
 async function suggestAllowlist(ctx, kind) {
@@ -299,6 +359,41 @@ export function execShell(ctx, cmd, timeoutSec = 120) {
     });
     child.on('error', (e) => { clearTimeout(timer); resolve(`failed to start: ${e.message}`); });
   });
+}
+
+export function loadSkillTool(ctx, { name }) {
+  if (!ctx.skills) return 'Skills system is not initialized.';
+  if (!name) return 'name is required to load a skill.';
+  const content = ctx.skills.readContent(name);
+  if (!content) {
+    const available = ctx.skills.list().map((s) => s.name);
+    return `Skill "${name}" not found. Available skills: ${available.join(', ') || '(none)'}`;
+  }
+  return content;
+}
+
+export function createArtifactTool(ctx, { title, summary, content, request_feedback }) {
+  if (!ctx.artifacts) return 'Artifact manager is not initialized.';
+  if (!title || !content) return 'title and content are required to create an artifact.';
+  const res = ctx.artifacts.create({
+    title,
+    summary: summary || title,
+    content,
+    requestFeedback: Boolean(request_feedback)
+  });
+  ctx.ui.print(c.cyan(`  · created artifact: ${res.path} (${title})`));
+  return `Artifact created at ${res.path}.`;
+}
+
+export async function callMcpTool(ctx, { server, tool, arguments: mcpArgs }) {
+  if (!ctx.mcp) return 'MCP client manager is not initialized.';
+  if (!server || !tool) return 'server and tool are required.';
+  try {
+    const res = await ctx.mcp.callTool(server, tool, mcpArgs || {});
+    return clip(res, 8000);
+  } catch (err) {
+    return `MCP Error: ${err.message}`;
+  }
 }
 
 export function updatePlan(ctx, { steps }) {
@@ -333,6 +428,10 @@ export async function executeTool(ctx, name, rawArgs) {
     case 'write_file': return writeFile(ctx, args);
     case 'edit_file': return editFile(ctx, args);
     case 'run_command': return runCommand(ctx, args);
+    case 'manage_task': return manageTask(ctx, args);
+    case 'load_skill': return loadSkillTool(ctx, args);
+    case 'create_artifact': return createArtifactTool(ctx, args);
+    case 'call_mcp_tool': return callMcpTool(ctx, args);
     case 'update_plan': return updatePlan(ctx, args);
     case 'remember': return rememberTool(ctx, args);
     default: throw new Error(`Unknown tool "${name}". Available: ${TOOL_NAMES.join(', ')}`);

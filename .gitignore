@@ -2,3 +2,4 @@ node_modules/
 .ember/
 *.log
 *.vsix
+.npmrc

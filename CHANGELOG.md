@@ -4,6 +4,30 @@
 -->
 # Changelog
 
+## v0.3.0 (2026-11-22)
+
+### Background Task Management
+- New `TaskManager` module (`src/tasks.js`) and `manage_task` tool (`list`, `status`, `send_input`, `kill`).
+- `run_command` supports `background: true` and `wait_ms` thresholding so long tests, builds, and servers run in the background without blocking the agent reasoning loop.
+- Event-driven task completion (`task_exit`) for reactive wakeups.
+
+### Dynamic Skills System
+- New `SkillsManager` module (`src/skills.js`) and `load_skill` tool.
+- Supports progressive context loading from `~/.ember/skills/` and `.ember/skills/` using YAML frontmatter (`name`, `description`).
+- Injects concise skill overviews into system prompt and allows on-demand loading of full procedural guidelines, saving precious local LLM context window tokens.
+
+### Structured Artifacts Engine
+- New `ArtifactManager` module (`src/artifacts.js`) and `create_artifact` tool.
+- Persists structured reports, architecture specs, plans, and Mermaid diagrams to `.ember/artifacts/<session>/`.
+- Frontmatter metadata tracking (`title`, `summary`, `user_facing`, `request_feedback`).
+
+### Model Context Protocol (MCP) Client
+- New `McpClientManager` module (`src/mcp.js`) and `call_mcp_tool` tool.
+- Standard JSON-RPC 2.0 stdio MCP client connecting to external tools via `.ember/mcp.json` or `~/.ember/mcp.json`.
+
+### Preview Server Port Detection
+- Fixed dev server port heuristic to avoid claiming host background services on port 3000 unless explicitly configured.
+
 ## v0.2.1 (2026-10-18)
 
 ### Fixed: "Ember is not writing files" on small models

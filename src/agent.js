@@ -24,6 +24,10 @@ import { dlog } from './debug.js';
 import { systemPrompt, DISTILL_PROMPT, CONSOLIDATE_PROMPT, COMMIT_PROMPT } from './prompt.js';
 import { detectStatedPreferences, makeNote, mergeNotes } from './memory.js';
 import { detectRepoStyle } from './style.js';
+import { TaskManager } from './tasks.js';
+import { SkillsManager } from './skills.js';
+import { ArtifactManager } from './artifacts.js';
+import { McpClientManager } from './mcp.js';
 import { c } from './ui.js';
 
 /** Streams text to the terminal but hides anything that looks like a JSON tool call. */
@@ -69,8 +73,16 @@ export class Agent {
     if (client) { this.client = client; this.modelName = parseModelRef(cfg.model, cfg)?.model || cfg.model; this.cloud = !!client.isCloud; this.setFast(); }
     else this.setModel(cfg.model);
     this.checkpoints = cfg.git?.checkpoints === false ? { enabled: false, list: [] } : new Checkpoints(root);
+    this.tasks = new TaskManager(root);
+    this.skills = new SkillsManager(root);
+    this.artifacts = new ArtifactManager(root);
+    this.mcp = new McpClientManager(root);
     this.ctx = {
       root, ui, cfg, memory, backups: [], plan: [],
+      tasks: this.tasks,
+      skills: this.skills,
+      artifacts: this.artifacts,
+      mcp: this.mcp,
       always: { writes: false, commands: new Set(), tools: new Set() },
       session: { events: [], writes: new Map(), said: [] }
     };
@@ -217,7 +229,7 @@ export class Agent {
     }
     return systemPrompt({
       root: this.root, tools: this.toolDefs(), fallback: !this.native, explain: this.mode === 'explain',
-      emberMd: this.emberMd, memory: this._memText, small: this.isSmall()
+      emberMd: this.emberMd, memory: this._memText, skills: this.skills?.formatForPrompt(), small: this.isSmall()
     });
   }
 
